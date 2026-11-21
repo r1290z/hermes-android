@@ -27,9 +27,11 @@ object Notifications {
 
     private const val CH_STATUS = "hermes_status"
     private const val CH_ANSWER = "hermes_answer"
+    private const val CH_REQUEST = "hermes_request"
 
     const val ID_STATUS = 1001
     const val ID_ANSWER = 1002
+    const val ID_REQUEST_BASE = 2000
 
     fun ensureChannels(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -45,6 +47,11 @@ object Notifications {
         nm.createNotificationChannel(
             NotificationChannel(CH_ANSWER, "Готовые ответы", NotificationManager.IMPORTANCE_DEFAULT).apply {
                 description = "Агент закончил и ждёт, когда ты прочитаешь"
+            }
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(CH_REQUEST, "Нужен ответ", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Агент остановился и ждёт твоего решения"
             }
         )
     }
@@ -108,6 +115,69 @@ object Notifications {
     }
 
     fun cancelWorking(context: Context) = NotificationManagerCompat.from(context).cancel(ID_STATUS)
+
+    /**
+     * The agent stopped and asks something: clarify or approval. High priority,
+     * own channel, heads-up. Approval additionally gets «Разрешить»/«Отклонить»
+     * actions that answer without opening the app.
+     */
+    fun showRequest(
+        context: Context,
+        sessionId: String?,
+        sessionTitle: String,
+        request: ServerRequest
+    ) {
+        val id = ID_REQUEST_BASE + request.requestId.hashCode() % 1000
+        val (title, text) = when (request) {
+            is ServerRequest.Clarify ->
+                context.getString(R.string.need_answer) to
+                    (request.questions.firstOrNull()?.question ?: "").let {
+                        if (it.length > 120) it.take(120) + "…" else it
+                    }
+            is ServerRequest.Approval ->
+                request.title to request.description.let {
+                    if (it.length > 120) it.take(120) + "…" else it
+                }
+        }
+        val builder = NotificationCompat.Builder(context, CH_REQUEST)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle(sessionTitle.ifEmpty { title })
+            .setContentText(text.ifEmpty { title })
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text.ifEmpty { title }))
+            .setAutoCancel(true)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(openIntent(context, sessionId))
+        if (request is ServerRequest.Approval) {
+            builder.addAction(0, context.getString(R.string.approve_once_short),
+                actionIntent(context, sessionId, request.requestId, "once"))
+            builder.addAction(0, context.getString(R.string.deny),
+                actionIntent(context, sessionId, request.requestId, "deny"))
+        }
+        // The quiet "working" card is superseded: the run is paused on a question.
+        NotificationManagerCompat.from(context).cancel(ID_STATUS)
+        notify(context, id, builder.build())
+    }
+
+    fun cancelRequest(context: Context, notificationId: Int) =
+        NotificationManagerCompat.from(context).cancel(notificationId)
+
+    private fun actionIntent(
+        context: Context,
+        sessionId: String?,
+        requestId: String,
+        choice: String
+    ): PendingIntent {
+        val intent = Intent(context, RequestActionReceiver::class.java).apply {
+            action = RequestActionReceiver.ACTION_ANSWER
+            putExtra(RequestActionReceiver.EXTRA_REQUEST_ID, requestId)
+            putExtra(RequestActionReceiver.EXTRA_CHOICE, choice)
+            if (sessionId != null) putExtra(ChatActivity.EXTRA_SESSION_ID, sessionId)
+        }
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+        return PendingIntent.getBroadcast(context, requestId.hashCode(), intent, flags)
+    }
 
     private fun openIntent(context: Context, sessionId: String?): PendingIntent {
         val intent = Intent(context, ChatActivity::class.java).apply {

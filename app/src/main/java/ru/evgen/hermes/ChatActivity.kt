@@ -22,6 +22,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -46,11 +47,20 @@ class ChatActivity : Activity() {
     private lateinit var title: TextView
     private lateinit var status: TextView
     private lateinit var adapter: ChatAdapter
+    private lateinit var attach: ImageButton
 
     private var sessionId: String? = null
     private var streaming = false
     private var runId: String? = null
     private var streamJob: Job? = null
+    private var fallbackJob: Job? = null
+    /** Set once the answer came from history: late socket deltas would duplicate it. */
+    private var fallbackTook = false
+
+    /** Picked but not yet sent: the content URI, the decoded bytes, the name. */
+    private var pendingImage: PendingImage? = null
+
+    class PendingImage(val uri: Uri, val base64: String, val filename: String)
 
     private val ui = Handler(Looper.getMainLooper())
     private var pendingIndex = -1
@@ -73,14 +83,19 @@ class ChatActivity : Activity() {
         list = findViewById(R.id.messages)
         input = findViewById(R.id.input)
         send = findViewById(R.id.btnSend)
+        attach = findViewById(R.id.btnAttach)
         title = findViewById(R.id.title)
         status = findViewById(R.id.status)
 
         adapter = ChatAdapter(this) { url -> openLink(url) }
+        adapter.answerHandler = { requestId, a, b -> onAnswer(requestId, a, b) }
         val layout = LinearLayoutManager(this).apply { stackFromEnd = true }
         list.layoutManager = layout
         list.adapter = adapter
         list.itemAnimator = null
+
+        api.onRequest = { request -> runOnUiThread { onRequestArrived(request) } }
+        api.onRequestCancel = { requestId -> runOnUiThread { onRequestCancelled(requestId) } }
 
         sessionId = intent.getStringExtra(EXTRA_SESSION_ID)
         title.text = intent.getStringExtra(EXTRA_SESSION_TITLE) ?: getString(R.string.new_session)
@@ -89,6 +104,7 @@ class ChatActivity : Activity() {
         findViewById<View>(R.id.btnReload).setOnClickListener { loadHistory() }
         findViewById<View>(R.id.btnMore).setOnClickListener { showActions() }
         send.setOnClickListener { if (streaming) stopTurn() else submit() }
+        attach.setOnClickListener { pickImage() }
 
         input.addTextChangedListener(object : TextWatcher {
             override fun afterTextChanged(s: Editable?) = updateSendState()
@@ -117,11 +133,83 @@ class ChatActivity : Activity() {
 
     // ── Sending ──────────────────────────────────────────────────────────────
 
+    private fun pickImage() {
+        val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "image/*"
+        }
+        runCatching {
+            startActivityForResult(Intent.createChooser(intent, getString(R.string.attach_image)), REQ_PICK_IMAGE)
+        }.onFailure { Toast.makeText(this, R.string.no_gallery, Toast.LENGTH_SHORT).show() }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_PICK_IMAGE) return
+        if (resultCode != RESULT_OK || data?.data == null) return
+        val uri = data.data!!
+        scope.launch {
+            val decoded = withContext(Dispatchers.IO) { decodeImage(uri) }
+            if (decoded == null) {
+                runOnUiThread { Toast.makeText(this@ChatActivity, R.string.image_too_big, Toast.LENGTH_LONG).show() }
+                return@launch
+            }
+            pendingImage = decoded
+            runOnUiThread {
+                showPendingImage()
+                updateSendState()
+            }
+        }
+    }
+
+    /** Downscale to ≤1600px and re-encode PNG/JPEG: a 12MP photo is a 4MB blob
+     *  the gateway would refuse, and base64 inflates it another 33%. */
+    private fun decodeImage(uri: Uri): PendingImage? = runCatching {
+        val source = android.graphics.ImageDecoder.createSource(contentResolver, uri)
+        val bitmap = android.graphics.ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
+            decoder.setTargetSampleSize(4)
+            decoder.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
+        }
+        val maxSide = maxOf(bitmap.width, bitmap.height)
+        val scaled = if (maxSide > 1600) {
+            val k = 1600f / maxSide
+            android.graphics.Bitmap.createScaledBitmap(
+                bitmap, (bitmap.width * k).toInt().coerceAtLeast(1), (bitmap.height * k).toInt().coerceAtLeast(1), true
+            )
+        } else bitmap
+        val bytes = java.io.ByteArrayOutputStream().use { out ->
+            scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+            out.toByteArray()
+        }
+        if (bytes.size > 4 * 1024 * 1024) return@runCatching null
+        val name = "img-" + System.currentTimeMillis() + ".jpg"
+        PendingImage(uri, android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP), name)
+    }.getOrNull()
+
+    private fun showPendingImage() {
+        val frame = findViewById<android.widget.FrameLayout>(R.id.attachPreview)
+        val img = frame.findViewById<android.widget.ImageView>(R.id.attachThumb)
+        val remove = frame.findViewById<View>(R.id.attachRemove)
+        frame.visibility = View.VISIBLE
+        img.setImageURI(pendingImage?.uri)
+        remove.setOnClickListener {
+            pendingImage = null
+            frame.visibility = View.GONE
+            updateSendState()
+        }
+    }
+
     private fun submit() {
         val text = input.text.toString().trim()
-        if (text.isEmpty() || streaming) return
+        if (streaming) return
+        if (text.isEmpty() && pendingImage == null) return
         input.setText("")
         hideKeyboard()
+
+        val image = pendingImage
+        pendingImage = null
+        findViewById<android.widget.FrameLayout>(R.id.attachPreview).visibility = View.GONE
 
         val id = sessionId
         if (id == null) {
@@ -137,17 +225,18 @@ class ChatActivity : Activity() {
                 }
                 sessionId = created
                 title.text = text.take(60)
-                sendTurn(created, text)
+                sendTurn(created, text, image)
             }
             return
         }
-        sendTurn(id, text)
+        sendTurn(id, text, image)
     }
 
-    private fun sendTurn(id: String, text: String) {
-        adapter.addLocalUser(text)
+    private fun sendTurn(id: String, text: String, image: PendingImage? = null) {
+        adapter.addLocalUser(text, image?.uri)
         scrollToEnd()
         streaming = true
+        fallbackTook = false
         updateSendState()
         status.visibility = View.VISIBLE
         status.text = getString(R.string.waiting)
@@ -155,14 +244,72 @@ class ChatActivity : Activity() {
         streamJob = scope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    api.streamTurn(id, text) { event -> onEvent(event) }
+                    api.streamTurn(id, text, image?.base64, image?.filename) { event -> onEvent(event) }
                 }
             } catch (e: Exception) {
                 runOnUiThread { onEvent(ChatEvent.Error(e.message ?: "Ошибка")) }
             }
         }
+        startHistoryFallback(id)
         if (!resumed) {
             Notifications.showWorking(this, id, title.text.toString(), getString(R.string.waiting))
+        }
+    }
+
+    /**
+     * The answer must appear even when the socket goes quiet.
+     *
+     * Streaming is the fast path, not the only one: while a turn is open this
+     * compares what is on screen with what the server has already stored, and if
+     * the stored answer is longer than the screen (or the screen is still empty)
+     * the turn is rendered from history. That covers a dropped socket, a rejected
+     * resume, and a gateway that answers the submit but never publishes deltas —
+     * all of which look identical to "my reply never came".
+     */
+    private fun startHistoryFallback(sessionId: String) {
+        fallbackJob?.cancel()
+        fallbackJob = scope.launch {
+            val deadline = System.currentTimeMillis() + 6 * 60_000
+            var idle = 0
+            while (streaming && System.currentTimeMillis() < deadline) {
+                delay(2500)
+                if (!streaming) break
+                val messages = withContext(Dispatchers.IO) { api.messages(sessionId, 10) }
+                val answer = messages.lastOrNull {
+                    !it.isUser && !it.isTool && it.content.isNotBlank()
+                } ?: continue
+                val shown = adapter.currentAssistantText()
+                if (answer.content.length > shown.length) {
+                    Diag.log(
+                        "fallback",
+                        "история ${answer.content.length} симв, на экране ${shown.length} — беру из истории"
+                    )
+                    fallbackTook = true
+                    adapter.setAssistantText(answer.content)
+                    lastFinalText = answer.content
+                    finishFromHistory()
+                    maybeAutoTitle(answer.content)
+                    break
+                }
+                if (shown.isNotEmpty()) {
+                    idle++
+                    if (idle > 40) break
+                }
+            }
+        }
+    }
+
+    /** Ends the turn from the REST answer: same state a clean `Done` leaves. */
+    private fun finishFromHistory() {
+        streaming = false
+        updateSendState()
+        status.visibility = View.GONE
+        adapter.notifyDataSetChanged()
+        scrollToEnd()
+        if (!resumed) {
+            Notifications.showAnswer(this, sessionId, title.text.toString(), lastFinalText.take(300))
+        } else {
+            Notifications.cancelWorking(this)
         }
     }
 
@@ -171,6 +318,9 @@ class ChatActivity : Activity() {
             is ChatEvent.Started -> runId = event.runId.ifEmpty { runId }
 
             is ChatEvent.Delta -> {
+                // The turn was already rendered from history; appending tokens now
+                // would show the same sentence twice.
+                if (fallbackTook) return
                 pendingIndex = adapter.appendDelta(event.text)
                 scheduleRefresh()
             }
@@ -204,6 +354,7 @@ class ChatActivity : Activity() {
                 lastFinalText = event.content
                 adapter.finishTurn(event.content)
                 runOnUiThread { adapter.notifyDataSetChanged() }
+                maybeAutoTitle(event.content)
             }
 
             is ChatEvent.Error -> runOnUiThread {
@@ -216,6 +367,7 @@ class ChatActivity : Activity() {
 
             is ChatEvent.Done -> runOnUiThread {
                 streaming = false
+                fallbackJob?.cancel()
                 runId = null
                 updateSendState()
                 status.visibility = View.GONE
@@ -235,6 +387,17 @@ class ChatActivity : Activity() {
         }
     }
 
+    /** After a turn an unnamed session takes its title from the answer's first
+     *  60 chars — otherwise the sidebar stays a wall of "Без названия". */
+    private fun maybeAutoTitle(answerText: String) {
+        if (answerText.isBlank()) return
+        val sid = sessionId ?: return
+        scope.launch {
+            val newTitle = withContext(Dispatchers.IO) { api.autoTitle(sid, answerText) }
+            if (newTitle != null) runOnUiThread { title.text = newTitle }
+        }
+    }
+
     /** One repaint per ~80 ms instead of one per token: the transcript is a
      *  RecyclerView and a notify per token makes the list unusable. */
     private fun scheduleRefresh() {
@@ -244,7 +407,7 @@ class ChatActivity : Activity() {
             refreshScheduled = false
             if (pendingIndex >= 0) {
                 adapter.notifyItemChanged(pendingIndex)
-                scrollToEnd()
+                scrollToEnd(force = false)
             }
         }, 80)
     }
@@ -329,12 +492,22 @@ class ChatActivity : Activity() {
     private fun updateSendState() {
         send.setImageResource(if (streaming) R.drawable.ic_stop else R.drawable.ic_send)
         send.contentDescription = getString(if (streaming) R.string.stop else R.string.send)
-        send.alpha = if (streaming || input.text.isNotBlank()) 1f else 0.4f
+        send.alpha = if (streaming || input.text.isNotBlank() || pendingImage != null) 1f else 0.4f
     }
 
-    private fun scrollToEnd() {
+    private fun scrollToEnd(force: Boolean = true) {
         if (adapter.itemCount == 0) return
-        list.scrollToPosition(adapter.itemCount - 1)
+        if (force) {
+            list.scrollToPosition(adapter.itemCount - 1)
+            return
+        }
+        // Only follow the stream when the user is already at the bottom: yanking
+        // the list down mid-read makes a long answer unreadable.
+        val layout = list.layoutManager as? LinearLayoutManager ?: return
+        val visible = layout.findLastVisibleItemPosition()
+        if (visible < 0 || visible >= adapter.itemCount - 2) {
+            list.scrollToPosition(adapter.itemCount - 1)
+        }
     }
 
     private fun hideKeyboard() {
@@ -346,9 +519,65 @@ class ChatActivity : Activity() {
         runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
     }
 
+    // ── Server requests (clarify / approval) ─────────────────────────────────
+
+    private fun onRequestArrived(request: ServerRequest) {
+        // Answered from the notification shade while this screen was alive:
+        // don't re-show a card for a request the receiver already settled.
+        if (pendingAnswered.remove(request.requestId) != null) return
+        val idx = adapter.addQuestion(request)
+        list.scrollToPosition(idx)
+        if (!resumed) {
+            Notifications.showRequest(this, sessionId, title.text.toString(), request)
+        }
+    }
+
+    private fun onRequestCancelled(requestId: String) {
+        if (!adapter.hasQuestion(requestId)) return
+        adapter.resolveQuestion(requestId, getString(R.string.question_cancelled))
+        Notifications.cancelRequest(this, Notifications.ID_REQUEST_BASE + requestId.hashCode() % 1000)
+        scrollToEnd()
+    }
+
+    /** Callback from the question card. Clarify: (qid, answer|null); approval:
+     *  (null, choice); cancel batch: (null, null). */
+    private fun onAnswer(requestId: String, qid: String?, answer: String?) {
+        val label = when {
+            qid == null && answer == null -> null                      // cancelled
+            qid == null -> labelOfChoice(answer ?: "")                 // approval
+            else -> answer ?: getString(R.string.skip)                 // clarify
+        }
+        when {
+            qid == null && answer == null -> api.cancelClarify(requestId)
+            qid == null -> api.answerApproval(requestId, answer!!)
+            answer == null -> api.answerClarify(requestId, qid, null)
+            else -> api.answerClarify(requestId, qid, answer)
+        }
+        Notifications.cancelRequest(this, Notifications.ID_REQUEST_BASE + requestId.hashCode() % 1000)
+        adapter.resolveQuestion(
+            requestId,
+            label?.let { getString(R.string.answered, it) } ?: getString(R.string.question_cancelled)
+        )
+        scrollToEnd()
+    }
+
+    private fun labelOfChoice(choice: String): String = when (choice) {
+        "once" -> getString(R.string.approve_once)
+        "session" -> getString(R.string.approve_session)
+        "always" -> getString(R.string.approve_always)
+        "deny" -> getString(R.string.deny)
+        else -> choice
+    }
+
     override fun onResume() {
         super.onResume()
         resumed = true
+        // Requests answered from the shade while the process was alive but the
+        // screen closed: their cards are stale, resolve them quietly.
+        for ((requestId, choice) in pendingAnswered) {
+            adapter.resolveQuestion(requestId, getString(R.string.answered, labelOfChoice(choice)))
+        }
+        pendingAnswered.clear()
         // Looking at the chat is not the same as the turn being over: the card
         // stays while the run is alive and only goes on Done (see above).
     }
@@ -365,12 +594,28 @@ class ChatActivity : Activity() {
 
     override fun onDestroy() {
         streamJob?.cancel()
+        fallbackJob?.cancel()
         scope.cancel()
+        if (liveApi === api) liveApi = null
+        api.onRequest = null
+        api.onRequestCancel = null
         super.onDestroy()
     }
 
     companion object {
         const val EXTRA_SESSION_ID = "ru.evgen.hermes.EXTRA_SESSION_ID"
         const val EXTRA_SESSION_TITLE = "ru.evgen.hermes.EXTRA_SESSION_TITLE"
+        const val REQ_PICK_IMAGE = 4101
+
+        /** For RequestActionReceiver: answers need the socket this activity's
+         *  ApiClient holds. Kept until onDestroy — the shade action typically
+         *  fires while the activity is stopped, not destroyed. */
+        @Volatile var liveApi: ApiClient? = null
+        val pendingAnswered = mutableMapOf<String, String>()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        liveApi = api
     }
 }

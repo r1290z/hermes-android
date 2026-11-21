@@ -82,6 +82,34 @@
         android:textSize="12sp"
         android:visibility="gone" />
 
+    <!-- Picked-but-unsent image: thumbnail with a remove cross. -->
+    <FrameLayout
+        android:id="@+id/attachPreview"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="start"
+        android:layout_marginStart="16dp"
+        android:layout_marginBottom="4dp"
+        android:visibility="gone">
+
+        <ImageView
+            android:id="@+id/attachThumb"
+            android:layout_width="120dp"
+            android:layout_height="120dp"
+            android:contentDescription="@string/attached_image"
+            android:scaleType="centerCrop" />
+
+        <ImageButton
+            android:id="@+id/attachRemove"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:layout_gravity="end|top"
+            android:background="#AA000000"
+            android:contentDescription="@string/remove_image"
+            android:src="@drawable/ic_back"
+            android:tint="@color/text_primary" />
+    </FrameLayout>
+
     <!-- Composer: field + send. The send button is always there (grey when the
          field is empty) instead of appearing on the first keystroke — a control
          that appears is a control the thumb has to hunt for. -->
@@ -95,6 +123,15 @@
         android:paddingTop="6dp"
         android:paddingEnd="8dp"
         android:paddingBottom="10dp">
+
+        <ImageButton
+            android:id="@+id/btnAttach"
+            android:layout_width="44dp"
+            android:layout_height="48dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/attach_image"
+            android:src="@drawable/ic_attach"
+            android:tint="@color/text_secondary" />
 
         <EditText
             android:id="@+id/input"

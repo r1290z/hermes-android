@@ -13,6 +13,7 @@ import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.TextView
 import android.widget.Toast
+import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.CoroutineScope
@@ -41,6 +42,7 @@ class MainActivity : Activity() {
 
     /** Own scope: plain Activity is not a LifecycleOwner. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private lateinit var statusBar: StatusBar
     private val ui = Handler(Looper.getMainLooper())
     private var loading = false
 
@@ -66,6 +68,7 @@ class MainActivity : Activity() {
         list.layoutManager = LinearLayoutManager(this)
         list.adapter = adapter
         list.itemAnimator = null
+        attachSwipes()
 
         findViewById<View>(R.id.newSession).setOnClickListener { openChat(null) }
         findViewById<ImageButton>(R.id.btnRefresh).apply {
@@ -75,7 +78,7 @@ class MainActivity : Activity() {
                 true
             }
         }
-        findViewById<ImageButton>(R.id.btnLogout).setOnClickListener { askLogout() }
+        findViewById<ImageButton>(R.id.btnLogout).setOnClickListener { showMore() }
 
         search.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == IME_ACTION_SEARCH) {
@@ -91,6 +94,10 @@ class MainActivity : Activity() {
 
         Notifications.ensureChannels(this)
         askNotificationPermission()
+
+        statusBar = StatusBar(this, findViewById(R.id.statusBar), api)
+        findViewById<View>(R.id.statusBar).setOnClickListener { statusBar.showDetails() }
+
         load(force = true)
         checkForUpdates(manual = false)
     }
@@ -104,6 +111,14 @@ class MainActivity : Activity() {
         }
         // Coming back from a chat: the title or the last-active time changed.
         if (!loading && all.isNotEmpty()) load(force = true)
+        if (::statusBar.isInitialized) statusBar.start()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // The strip polls every 20 s; no reason to keep the radio busy behind
+        // another screen.
+        if (::statusBar.isInitialized) statusBar.stop()
     }
 
     // ── Sessions ─────────────────────────────────────────────────────────────
@@ -136,7 +151,7 @@ class MainActivity : Activity() {
         if (shown.isEmpty()) {
             status.visibility = View.VISIBLE
             status.text = if (q.isNotEmpty()) getString(R.string.nothing_found)
-            else getString(R.string.empty_chat)
+            else getString(R.string.no_sessions)
         } else {
             status.visibility = View.GONE
         }
@@ -151,9 +166,58 @@ class MainActivity : Activity() {
         startActivity(intent)
     }
 
+    // ── Swipes ────────────────────────────────────────────────────────────────
+
+    /** Right swipe pins, left swipe deletes — the two things a thumb does most
+     *  on this screen. Long-press menu stays as the full set of actions. */
+    private fun attachSwipes() {
+        val callback = object : ItemTouchHelper.SimpleCallback(
+            0, ItemTouchHelper.START or ItemTouchHelper.END
+        ) {
+            override fun onMove(
+                recyclerView: RecyclerView,
+                viewHolder: RecyclerView.ViewHolder,
+                target: RecyclerView.ViewHolder
+            ): Boolean = false
+
+            override fun getMovementFlags(
+                recyclerView: RecyclerView,
+                viewHolder: RecyclerView.ViewHolder
+            ): Int {
+                // Headers and the "Продолжить" row are not swipeable.
+                if (adapter.rowAt(viewHolder.bindingAdapterPosition) !is SessionAdapter.Row.Item) {
+                    return 0
+                }
+                return super.getMovementFlags(recyclerView, viewHolder)
+            }
+
+            override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
+                val row = adapter.rowAt(viewHolder.bindingAdapterPosition)
+                val session = (row as? SessionAdapter.Row.Item)?.session ?: run {
+                    adapter.notifyItemChanged(viewHolder.bindingAdapterPosition)
+                    return
+                }
+                if (direction == ItemTouchHelper.END) {
+                    scope.launch {
+                        withContext(Dispatchers.IO) { api.setPinned(session.id, !session.pinned) }
+                        load(force = true)
+                    }
+                } else {
+                    // The row is already visually gone; put it back until the
+                    // user confirms, otherwise "Отмена" leaves a hole.
+                    adapter.notifyItemChanged(viewHolder.bindingAdapterPosition)
+                    askDelete(session)
+                }
+            }
+        }
+        ItemTouchHelper(callback).attachToRecyclerView(list)
+    }
+
     private fun showActions(session: Session) {
         val pinLabel = getString(if (session.pinned) R.string.unpin else R.string.pin)
-        val items = arrayOf<CharSequence>(pinLabel, getString(R.string.rename), getString(R.string.delete))
+        val items = arrayOf<CharSequence>(
+            pinLabel, getString(R.string.rename), getString(R.string.archive_action), getString(R.string.delete)
+        )
         AlertDialog.Builder(this)
             .setTitle(session.title)
             .setItems(items) { _, which ->
@@ -163,7 +227,16 @@ class MainActivity : Activity() {
                         load(force = true)
                     }
                     1 -> askRename(session)
-                    2 -> askDelete(session)
+                    2 -> scope.launch {
+                        val ok = withContext(Dispatchers.IO) { api.setArchived(session.id, true) }
+                        if (ok) {
+                            ArchiveStore.add(this@MainActivity, session.id, session.title)
+                            all.removeAll { it.id == session.id }
+                            applyFilter()
+                            Toast.makeText(this@MainActivity, R.string.archived_toast, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    3 -> askDelete(session)
                 }
             }
             .setNegativeButton(R.string.cancel, null)
@@ -204,6 +277,22 @@ class MainActivity : Activity() {
                         Toast.makeText(this@MainActivity, R.string.deleted, Toast.LENGTH_SHORT).show()
                     }
                 }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    /** The "…" button: the archive lives behind it, logout is the destructive
+     *  end of the list. */
+    private fun showMore() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.more)
+            .setItems(arrayOf<CharSequence>(
+                getString(R.string.archive),
+                getString(R.string.logout)
+            )) { _, which ->
+                if (which == 0) startActivity(Intent(this, ArchiveActivity::class.java))
+                else askLogout()
             }
             .setNegativeButton(R.string.cancel, null)
             .show()
@@ -260,6 +349,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        if (::statusBar.isInitialized) statusBar.destroy()
         scope.cancel()
         super.onDestroy()
     }

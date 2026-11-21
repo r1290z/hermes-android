@@ -22,8 +22,8 @@ android {
         applicationId = "ru.evgen.hermes"
         minSdk = 24
         targetSdk = 34
-        versionCode = 5
-        versionName = "4.0"
+        versionCode = 9
+        versionName = "4.4"
     }
 
     signingConfigs {
@@ -41,7 +41,15 @@ android {
         release {
             isMinifyEnabled = false
             isShrinkResources = false
-            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            // No debug fallback on purpose: a release APK signed with the debug key
+            // looks fine and installs on nothing that already has the app. Missing
+            // keystore.properties must fail the build, not degrade it.
+            signingConfig = signingConfigs.findByName("release")
+                ?: throw GradleException(
+                    "keystore.properties отсутствует — release нельзя подписать. " +
+                        "Ключ лежит в ~/.hermes/secrets/hermes-android.{jks,properties}, " +
+                        "build.sh копирует его на билд-хост."
+                )
         }
         debug {
             applicationIdSuffix = ".debug"

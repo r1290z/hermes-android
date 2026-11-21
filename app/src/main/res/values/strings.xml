@@ -13,6 +13,7 @@
     <string name="earlier">Раньше</string>
     <string name="nothing_found">Ничего не найдено</string>
     <string name="loading">Загружаем сеансы…</string>
+    <string name="no_sessions">Сеансов пока нет</string>
     <string name="need_login">Нужно войти в Hermes — открой чат и войди, список подтянется сам</string>
     <string name="open_chat">Открыть чат</string>
     <string name="session_actions">Сеанс</string>
@@ -45,4 +46,32 @@
     <string name="empty_chat">Сообщений пока нет</string>
     <string name="reload">Обновить</string>
     <string name="logout">Выйти</string>
+    <string name="more">Ещё</string>
+    <string name="archive">Архив</string>
+    <string name="archive_empty">В архиве пусто. Смахни сеанс влево в списке и выбери «В архив», либо добавь через долгое нажатие.</string>
+    <string name="archive_action">В архив</string>
+    <string name="archived_toast">Убрано в архив</string>
+    <string name="restore">Вернуть</string>
+    <string name="restored">Возвращено в список</string>
+
+    <!-- Agent requests (clarify / approval) -->
+    <string name="approve_once">Разрешить один раз</string>
+    <string name="approve_session">Разрешить в этом сеансе</string>
+    <string name="approve_always">Разрешать всегда</string>
+    <string name="approve_once_short">Разрешить</string>
+    <string name="deny">Отклонить</string>
+    <string name="skip">Пропустить</string>
+    <string name="need_answer">Нужен ответ</string>
+    <string name="question_cancelled">Вопрос снят</string>
+    <string name="answered">Ответ отправлен: %1$s</string>
+
+    <!-- Images -->
+    <string name="attach_image">Прикрепить картинку</string>
+    <string name="attached_image">Картинка</string>
+    <string name="remove_image">Убрать картинку</string>
+    <string name="no_gallery">Нет приложения для выбора картинок</string>
+    <string name="image_too_big">Не удалось подготовить картинку</string>
+
+    <!-- Compaction -->
+    <string name="compacted_summary">Свёрнуто: предыдущие сообщения сжаты в сводку</string>
 </resources>

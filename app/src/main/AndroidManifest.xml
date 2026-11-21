@@ -44,5 +44,15 @@
             android:exported="false"
             android:theme="@style/Theme.Hermes"
             android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".ArchiveActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|density"
+            android:exported="false"
+            android:theme="@style/Theme.Hermes" />
+
+        <receiver
+            android:name=".RequestActionReceiver"
+            android:exported="false" />
     </application>
 </manifest>

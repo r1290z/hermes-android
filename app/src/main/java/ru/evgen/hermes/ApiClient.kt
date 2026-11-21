@@ -139,11 +139,80 @@ class ApiClient(private val context: Context) {
         return out
     }
 
+    /** The server has no listing that returns archived rows (every surface
+     *  pins `archived = 0` in SQL; REST `include_hidden` only works with a
+     *  `title` lookup), so the archive is the local registry (ArchiveStore)
+     *  plus per-row `GET /api/sessions/{id}` — that endpoint still answers
+     *  for an archived row. Rows gone from the server (404) are pruned. */
+    fun archivedSessions(context: android.content.Context): List<Session> {
+        val out = mutableListOf<Session>()
+        for (id in ArchiveStore.ids(context)) {
+            val (code, json) = sessionRowStatus(id)
+            if (code == 404 || code == 410) {
+                ArchiveStore.remove(context, id)  // deleted upstream
+                continue
+            }
+            val row = json?.let { Session.from(it, includeArchived = true) } ?: continue
+            if (!row.archived) continue  // restored elsewhere
+            out += row
+        }
+        return out.sortedByDescending { it.lastActive }
+    }
+
+    /** `GET /api/sessions/{id}` — works for archived rows too (unlike every
+     *  listing). null when the row is gone (404/410) or unreachable; the
+     *  caller must NOT treat a network failure as "deleted". */
+    fun sessionRow(id: String): JSONObject? =
+        sessionRowStatus(id).second
+
+    /** Same fetch, but reporting the HTTP code so the archive can tell a row
+     *  deleted upstream (404/410 — prune) from a transient failure (keep). */
+    fun sessionRowStatus(id: String): Pair<Int, JSONObject?> = try {
+        val response = client.newCall(Request.Builder().url("$base/api/sessions/$id").get().build()).execute()
+        response.use {
+            val body = it.body?.string()
+            when {
+                it.code == 404 || it.code == 410 -> it.code to null
+                it.isSuccessful && body != null ->
+                    it.code to runCatching { JSONObject(body) }.getOrNull()?.takeIf { j -> j.has("id") }
+                else -> it.code to null
+            }
+        }
+    } catch (e: IOException) {
+        -1 to null
+    }
+
+    private fun sessionsFrom(response: String?, includeArchived: Boolean = false): List<Session> {
+        val root = response?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return emptyList()
+        val arr = root.optJSONArray("sessions") ?: root.optJSONArray("data") ?: return emptyList()
+        val out = mutableListOf<Session>()
+        for (i in 0 until arr.length()) {
+            arr.optJSONObject(i)?.let { Session.from(it, includeArchived)?.let(out::add) }
+        }
+        return out
+    }
+
+    /** Sets the title from the first 60 chars of the answer when the session is
+     *  still unnamed — otherwise every new session shows the same blank row.
+     *  Returns the new title when it renamed, null when it left the name alone. */
+    fun autoTitle(sessionId: String, answerText: String): String? {
+        val current = get("/api/sessions/$sessionId")?.let {
+            runCatching { JSONObject(it).optString("title") }.getOrNull()
+        } ?: ""
+        val named = current.trim().isNotEmpty() && current.trim() != "Новый сеанс"
+        if (named) return null
+        val text = answerText.replace('\n', ' ').trim().take(60).ifEmpty { return null }
+        return if (renameSession(sessionId, text)) text else null
+    }
+
     fun renameSession(id: String, title: String): Boolean =
         mutate("PATCH", id, JSONObject().put("title", title).toString())
 
     fun setPinned(id: String, pinned: Boolean): Boolean =
         mutate("PATCH", id, JSONObject().put("pinned", pinned).toString())
+
+    fun setArchived(id: String, archived: Boolean): Boolean =
+        mutate("PATCH", id, JSONObject().put("archived", archived).toString())
 
     fun deleteSession(id: String): Boolean = mutate("DELETE", id, null)
 
@@ -176,16 +245,33 @@ class ApiClient(private val context: Context) {
         }
     }
 
+    // ── Status ───────────────────────────────────────────────────────────────
+
+    /** Gateway liveness + build: `{ok, version, commit}`. */
+    fun health(): JSONObject? = get("/api/health")?.let {
+        runCatching { JSONObject(it) }.getOrNull()
+    }
+
+    /** Current model and the context window it runs with. */
+    fun modelInfo(): JSONObject? = get("/api/model/info")?.let {
+        runCatching { JSONObject(it) }.getOrNull()
+    }
+
     // ── Messages (REST) ──────────────────────────────────────────────────────
 
     fun messages(sessionId: String, limit: Int = 200): List<ChatMessage> {
-        val raw = get("/api/sessions/$sessionId/messages?limit=$limit") ?: return emptyList()
+        // inline_images=false: the default inlines every stored attachment as a
+        // data:-URI in `content`, so a picture-heavy history drags megabytes of
+        // base64. The projection replaces the image part with "[image]" instead.
+        val raw = get("/api/sessions/$sessionId/messages?limit=$limit&inline_images=false") ?: return emptyList()
         val root = runCatching { JSONObject(raw) }.getOrNull() ?: return emptyList()
         val arr = root.optJSONArray("messages") ?: return emptyList()
         val out = mutableListOf<ChatMessage>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
-            if (o.optBoolean("compacted", false)) continue
+            // Hidden rows are gateway scaffolding (handoffs, notices): the user
+            // never typed them and must not see them.
+            if (o.optString("display_kind") == "hidden") continue
             ChatMessage.from(o)?.let(out::add)
         }
         return out
@@ -202,9 +288,43 @@ class ApiClient(private val context: Context) {
     @Volatile private var openLatch: CountDownLatch? = null
     @Volatile private var sink: ((ChatEvent) -> Unit)? = null
 
+    /** Server→client requests (clarify/approval). Null until a listener
+     *  attaches; the frames only arrive after client.capabilities. */
+    @Volatile var onRequest: ((ServerRequest) -> Unit)? = null
+    @Volatile var onRequestCancel: ((String) -> Unit)? = null
+
+    /** Frames replayed by `session.resume` for requests still unanswered. */
+    @Volatile var openRequests: List<ServerRequest> = emptyList()
+        private set
+
+    /** Every live request by id, so answer paths can pick the right wire
+     *  format (srq frame reply vs canonical respond RPC). */
+    private val liveRequests = java.util.concurrent.ConcurrentHashMap<String, ServerRequest>()
+
+    /** Latest `execution_generation` for the attached session: interrupting a
+     *  finished turn's generation cannot bleed into the next one. */
+    @Volatile private var executionGeneration: Int? = null
+
     /** Only the attached session's events reach the UI: one socket carries the
      *  traffic of every session this app has touched. */
     @Volatile private var attached: String? = null
+
+    /** Logged once per turn: a token-level log would be useless noise. */
+    @Volatile private var sawDelta = false
+
+    /** Set by onFailure when a turn was in flight; onOpen replays the gap. */
+    @Volatile private var catchUpOnOpen = false
+
+    val isSocketConnected: Boolean get() = connected && socket != null
+
+    /** Opens the socket ahead of the first message so the status bar can report a
+     *  real gateway state instead of "unknown". Best effort, never throws. */
+    fun warmSocket() {
+        if (connected) return
+        Thread {
+            runCatching { ensureSocket(15000) }
+        }.apply { isDaemon = true }.start()
+    }
 
     private class RpcWaiter {
         val latch = CountDownLatch(1)
@@ -221,15 +341,24 @@ class ApiClient(private val context: Context) {
             .url("$base/api/webapp/socket-ticket?socket=gateway")
             .post("{}".toRequestBody(JSON))
             .build()
-        val raw = execute(request) ?: return null
-        return runCatching { JSONObject(raw).optString("ticket").ifEmpty { null } }.getOrNull()
+        val raw = execute(request)
+        if (raw == null) {
+            Diag.log("ticket", "нет ответа (401/сеть)")
+            return null
+        }
+        val ticket = runCatching { JSONObject(raw).optString("ticket") }.getOrNull()
+        Diag.log("ticket", if (ticket.isNullOrEmpty()) "пустой билет" else "ok ${ticket.take(8)}…")
+        return ticket?.ifEmpty { null }
     }
 
     private fun ensureSocket(timeoutMs: Long = 20000): Boolean {
         if (connected && socket != null) return true
         synchronized(this) {
             if (connected && socket != null) return true
-            val ticket = socketTicket() ?: return false
+            val ticket = socketTicket() ?: run {
+                error = "Шлюз не выдал билет — проверь вход"
+                return false
+            }
             val scheme = if (base.startsWith("https://")) "wss://" else "ws://"
             val host = base.removePrefix("https://").removePrefix("http://").trimEnd('/')
             val url = scheme + host + "/api/ws?ticket=" +
@@ -238,7 +367,12 @@ class ApiClient(private val context: Context) {
             openLatch = latch
             socket?.cancel()
             socket = client.newWebSocket(Request.Builder().url(url).build(), listener)
-            return latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+            val opened = latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+            if (!opened) {
+                Diag.log("socket", "не открылся за ${timeoutMs / 1000} с")
+                error = "Шлюз не отвечает по сокету"
+            }
+            return opened
         }
     }
 
@@ -246,6 +380,20 @@ class ApiClient(private val context: Context) {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             connected = true
             openLatch?.countDown()
+            Diag.log("socket", "открыт")
+            // A mid-turn drop: the turn kept running server-side, its events went
+            // to nobody. Replay the gap before anything new can interleave.
+            if (catchUpOnOpen) {
+                catchUpOnOpen = false
+                val sid = attached
+                val target = sink
+                if (sid != null && target != null) {
+                    Thread { runCatching { catchUp(sid, target) } }.apply { isDaemon = true }.start()
+                }
+            }
+            // The gateway only sends clarify/approval to clients that announced
+            // they can answer; without this the agent's question times out.
+            sendCapabilities()
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
@@ -254,6 +402,18 @@ class ApiClient(private val context: Context) {
                 frame.optJSONObject("params")?.let(::handleEvent)
                 return
             }
+            // A server→client request: string id `srq-…` + a method of its own.
+            if (frame.has("method") && frame.optString("id").startsWith("srq-")) {
+                ServerRequest.from(frame)?.let { request ->
+                    liveRequests[request.requestId] = request
+                    val target = onRequest ?: return
+                    main.post { target(request) }
+                }
+                return
+            }
+            // Retraction (`request.cancel`) arrives as an event — see the
+            // "request.cancel" branch in handleEvent; there is no top-level
+            // frame form of it on the wire.
             val id = frame.optInt("id", -1)
             waiters.remove(id)?.complete(frame)
         }
@@ -261,6 +421,9 @@ class ApiClient(private val context: Context) {
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             connected = false
             openLatch?.countDown()
+            Diag.log("socket", "сбой: ${t.javaClass.simpleName} ${t.message ?: ""} http=${response?.code ?: "-"}")
+            // A drop mid-turn: the next open must replay what published meanwhile.
+            if (attached != null && sink != null) catchUpOnOpen = true
             for (waiter in waiters.values) waiter.fail()
             waiters.clear()
         }
@@ -268,11 +431,15 @@ class ApiClient(private val context: Context) {
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             connected = false
             openLatch?.countDown()
+            Diag.log("socket", "закрыт $code $reason")
         }
     }
 
     private fun rpc(method: String, params: JSONObject, timeoutMs: Long = 25000): JSONObject? {
-        if (!ensureSocket()) return null
+        if (!ensureSocket()) {
+            Diag.log("rpc", "$method: нет сокета")
+            return null
+        }
         val ws = socket ?: return null
         val id = rpcIds.getAndIncrement()
         val waiter = RpcWaiter()
@@ -284,18 +451,24 @@ class ApiClient(private val context: Context) {
             .put("params", params)
         if (!ws.send(frame.toString())) {
             waiters.remove(id)
+            error = "Сокет закрыт, сообщение не ушло"
+            Diag.log("rpc", "$method: send() = false")
             return null
         }
         if (!waiter.latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
             waiters.remove(id)
+            error = "$method: шлюз не ответил за ${timeoutMs / 1000} с"
+            Diag.log("rpc", "$method: таймаут")
             return null
         }
         val reply = waiter.frame ?: return null
         if (reply.has("error")) {
             val err = reply.optJSONObject("error")
             error = err?.optString("message") ?: "Ошибка шлюза"
+            Diag.log("rpc", "$method: ошибка $error")
             return null
         }
+        Diag.log("rpc", "$method: ok")
         return reply.optJSONObject("result")
     }
 
@@ -305,11 +478,58 @@ class ApiClient(private val context: Context) {
     private fun handleEvent(params: JSONObject) {
         val type = params.optString("type")
         val sid = params.optString("session_id")
+        // Live frames advance the replay cursor so a post-drop catch-up asks for
+        // only the real gap, not the whole turn again.
+        if (params.optLong("seq", -1) > 0) {
+            replayCursor[sid]?.let { (seq, epoch) ->
+                val newSeq = params.optLong("seq")
+                if (newSeq > seq) {
+                    replayCursor[sid] = Pair(newSeq, params.optString("replay_epoch").ifEmpty { epoch })
+                }
+            }
+        }
         val bound = attached
         if (bound != null && sid.isNotEmpty() && sid != bound) return
+        // Canonical control projection: the prompt arrives as an event and is
+        // answered by the clarify.respond/approval.respond RPC, not a frame reply.
+        if (type == "clarify.request" || type == "approval.request") {
+            params.optJSONObject("payload")?.let(ServerRequest::fromPrompt)?.let { request ->
+                liveRequests[request.requestId] = request
+                val target = onRequest ?: return
+                main.post { target(request) }
+            }
+            return
+        }
+        if (type == "clarify.settled" || type == "approval.settled") {
+            val promptId = params.optJSONObject("payload")?.optString("prompt_id") ?: ""
+            if (promptId.isNotEmpty()) {
+                val target = onRequestCancel ?: return
+                main.post { target(promptId) }
+            }
+            return
+        }
+        // Retraction of a server→client request: timeout, interrupt, or
+        // answered from another client. payload.id is the srq id, which is
+        // what the request is filed under in liveRequests (canonical prompts
+        // are retracted by clarify.settled / approval.settled above).
+        if (type == "request.cancel") {
+            val payload = params.optJSONObject("payload") ?: JSONObject()
+            val target = onRequestCancel ?: return
+            val cancelled = liveRequests.values.filter { !it.canonical && it.srqId == payload.optString("id") }
+            if (cancelled.isEmpty()) return
+            cancelled.forEach { liveRequests.remove(it.requestId) }
+            main.post { cancelled.forEach { target(it.requestId) } }
+            return
+        }
         val payload = params.optJSONObject("payload") ?: JSONObject()
         val event = when (type) {
-            "message.delta" -> payload.optString("text").takeIf { it.isNotEmpty() }?.let(ChatEvent::Delta)
+            "message.delta" -> payload.optString("text").takeIf { it.isNotEmpty() }?.let { text ->
+                if (!sawDelta) {
+                    sawDelta = true
+                    Diag.log("event", "первый message.delta")
+                }
+                ChatEvent.Delta(text)
+            }
             "thinking.delta" -> payload.optString("text").takeIf { it.isNotEmpty() }?.let(ChatEvent::Reasoning)
             "tool.start" -> ChatEvent.ToolStarted(
                 payload.optString("name"),
@@ -325,7 +545,10 @@ class ApiClient(private val context: Context) {
                 ?.let { ChatEvent.Commentary(it) }
             "status.update" -> payload.optString("text").takeIf { it.isNotBlank() }
                 ?.let { ChatEvent.Commentary(it) }
-            "message.complete" -> ChatEvent.Completed(payload.optString("text"))
+            "message.complete" -> {
+                Diag.log("event", "message.complete")
+                ChatEvent.Completed(payload.optString("text"))
+            }
             else -> null
         }
         event?.let { e ->
@@ -361,16 +584,41 @@ class ApiClient(private val context: Context) {
         return id
     }
 
+    /** Stages image bytes in the profile image cache (gateway's
+     *  `image.attach_bytes`); the returned absolute path is what
+     *  `prompt.submit`'s `attachments` later refers to. Must run after
+     *  `session.resume` — the gateway only accepts it for a subscribed session. */
+    fun attachImage(sessionId: String, contentBase64: String, filename: String): JSONObject? {
+        return rpc(
+            "image.attach_bytes",
+            JSONObject()
+                .put("session_id", sessionId)
+                .put("content_base64", contentBase64)
+                .put("filename", filename),
+            30000
+        )
+    }
+
     /**
      * Runs one turn. `onEvent` fires on the main thread.
      *
      * Blocks until the gateway admits the prompt; the answer arrives later on
      * the socket, so the caller's coroutine can return immediately after.
      */
-    fun streamTurn(sessionId: String, message: String, onEvent: (ChatEvent) -> Unit) {
+    fun streamTurn(sessionId: String, message: String, onEvent: (ChatEvent) -> Unit) =
+        streamTurn(sessionId, message, null, null, onEvent)
+
+    fun streamTurn(
+        sessionId: String,
+        message: String,
+        imageBase64: String?,
+        imageFilename: String?,
+        onEvent: (ChatEvent) -> Unit
+    ) {
         error = null
         sink = onEvent
         attached = sessionId
+        sawDelta = false
         val resumed = rpc(
             "session.resume",
             JSONObject().put("session_id", sessionId).put("omit_messages", true),
@@ -378,27 +626,219 @@ class ApiClient(private val context: Context) {
         )
         if (resumed == null) {
             val why = error ?: "Не удалось открыть сеанс"
+            Diag.log("turn", "resume не удался: $why")
             main.post { onEvent(ChatEvent.Error(why)) }
             return
         }
-        val submitted = rpc(
-            "prompt.submit",
-            JSONObject()
-                .put("session_id", sessionId)
-                .put("text", message)
-                .put("submission_id", "apk-" + System.currentTimeMillis()),
-            40000
-        )
+        // The gateway may answer with a different live id than the one asked for
+        // (stored vs live session). Submitting to the wrong one is silently
+        // accepted but the turn never starts, so follow the gateway's answer.
+        val liveId = resumed.optString("session_id").ifEmpty { sessionId }
+        if (liveId != sessionId) {
+            Diag.log("turn", "live id $liveId (спрашивали ${sessionId.take(18)}…)")
+            attached = liveId
+        }
+        // The replay cursor: after a socket drop, session.events.since replays
+        // exactly the frames this client never saw (bounded ring: 512/4MB).
+        if (!resumed.isNull("last_sequence") && !resumed.isNull("replay_epoch")) {
+            replayCursor[liveId] = Pair(resumed.optLong("last_sequence"), resumed.optString("replay_epoch"))
+        }
+        // Re-announce after every resume (a reconnect gets a fresh attachment)
+        // and pick up requests that were pending when the app went away.
+        sendCapabilities()
+        executionGeneration = if (resumed.isNull("execution_generation")) null
+        else resumed.optInt("execution_generation")
+        openRequests = resumed.optJSONArray("open_requests")?.let { arr ->
+            (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+                .mapNotNull(ServerRequest::fromResumeEntry)
+        } ?: emptyList()
+        // Canonical path: pending prompts ride the resume result's `prompts`
+        // array (one entry per unanswered question), not `open_requests`.
+        val resumedPrompts = resumed.optJSONArray("prompts")?.let { arr ->
+            (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+                .mapNotNull(ServerRequest::fromPrompt)
+        } ?: emptyList()
+        openRequests += resumedPrompts
+        for (request in openRequests) {
+            liveRequests[request.requestId] = request
+            val target = onRequest ?: break
+            main.post { target(request) }
+        }
+        val submitParams = JSONObject()
+            .put("session_id", liveId)
+            .put("text", message)
+            .put("submission_id", "apk-" + System.currentTimeMillis())
+        // The image only reaches the model via prompt.submit attachments, and
+        // the staged path only exists after resume subscribed this socket.
+        if (imageBase64 != null) {
+            val staged = attachImage(liveId, imageBase64, imageFilename ?: "upload.png")
+            val path = staged?.optString("path").orEmpty()
+            val mime = staged?.optString("mime").orEmpty()
+            if (path.isEmpty()) {
+                val why = error ?: "Картинка не прикрепилась"
+                Diag.log("turn", "attach_bytes не удался: $why")
+                main.post { onEvent(ChatEvent.Error(why)) }
+                return
+            }
+            submitParams.put("attachments", JSONArray().put(
+                JSONObject().put("path", path).put("mime", mime)))
+            Diag.log("turn", "attachment: ${path.substringAfterLast('/')}")
+        }
+        val submitted = rpc("prompt.submit", submitParams, 40000)
         if (submitted == null) {
             val why = error ?: "Сообщение не отправлено"
+            Diag.log("turn", "submit не удался: $why")
             main.post { onEvent(ChatEvent.Error(why)) }
+        } else {
+            Diag.log("turn", "submit принят, ждём события")
         }
     }
 
     fun stopTurn(sessionId: String) {
         runCatching {
-            rpc("session.interrupt", JSONObject().put("session_id", sessionId), 15000)
+            val params = JSONObject().put("session_id", sessionId)
+            // Pin the interrupt to this turn's generation: without it a stop
+            // landing after the turn finished can kill the NEXT turn instead.
+            executionGeneration?.let { params.put("execution_generation", it) }
+            rpc("session.interrupt", params, 15000)
         }
+    }
+
+    // ── Replay catch-up ──────────────────────────────────────────────────────
+
+    /** (last_sequence, replay_epoch) per session, from `session.resume`. */
+    private val replayCursor = ConcurrentHashMap<String, Pair<Long, String>>()
+
+    class CatchUpResult(val truncated: Boolean, val applied: Int)
+
+    /**
+     * Replays the events a socket drop swallowed. Feed the stored cursor to
+     * `session.events.since`; every returned frame goes through the same
+     * handleEvent path a live frame would. `truncated` (the ring overran, the
+     * epoch rolled, or the server says `snapshot_required`) means the deltas are
+     * incomplete and the caller must re-read /messages instead.
+     */
+    fun catchUp(sessionId: String, onEvent: (ChatEvent) -> Unit): CatchUpResult? {
+        val cursor = replayCursor[sessionId]
+            ?: return CatchUpResult(truncated = true, applied = 0)
+        sink = onEvent
+        attached = sessionId
+        sawDelta = false
+        val result = rpc(
+            "session.events.since",
+            JSONObject()
+                .put("session_id", sessionId)
+                .put("last_sequence", cursor.first)
+                .put("replay_epoch", cursor.second),
+            20000
+        ) ?: return null
+        val truncated = result.optBoolean("truncated", false) ||
+            result.optBoolean("snapshot_required", false)
+        val events = result.optJSONArray("events") ?: JSONArray()
+        if (!truncated) {
+            for (i in 0 until events.length()) {
+                events.optJSONObject(i)?.let(::handleEvent)
+            }
+            // Advance the cursor so a second drop replays only the new gap.
+            val latest = result.optLong("latest_seq", cursor.first)
+            val epoch = result.optString("replay_epoch").ifEmpty { cursor.second }
+            replayCursor[sessionId] = Pair(latest, epoch)
+        }
+        return CatchUpResult(truncated, events.length())
+    }
+
+    // ── Server requests (clarify / approval) ─────────────────────────────────
+
+    private fun sendCapabilities() {
+        val frame = JSONObject()
+            .put("jsonrpc", "2.0")
+            .put("id", "cap-" + rpcIds.getAndIncrement())
+            .put("method", "client.capabilities")
+            .put("params", JSONObject().put("server_requests", true))
+        socket?.send(frame.toString())
+    }
+
+    /** Answer one clarify question. `answer == null` skips it. Both wire
+     *  formats accept the skip; the canonical one as an empty string (a
+     *  documented skip, never a timeout), the srq one as JSON null. */
+    fun answerClarify(requestId: String, questionId: String, answer: String?) {
+        val request = liveRequests[requestId]
+        if (request?.canonical == true) {
+            scopeLaunch {
+                rpc(
+                    "clarify.respond",
+                    JSONObject()
+                        .put("session_id", attached ?: return@scopeLaunch)
+                        .put("execution_generation", request.generation ?: return@scopeLaunch)
+                        .put("prompt_id", requestId)
+                        .put("answer", answer ?: ""),
+                    15000
+                )
+                liveRequests.remove(requestId)
+            }
+            return
+        }
+        scopeLaunch {
+            rpc(
+                "clarify.lock",
+                JSONObject()
+                    .put("request_id", requestId)
+                    .put("question_id", questionId)
+                    .put("answer", answer ?: JSONObject.NULL),
+                15000
+            )
+        }
+    }
+
+    /** Dismiss a whole clarify batch: a bare reply to the srq id, no `answers`;
+     *  on the canonical wire a skip is an empty answer. */
+    fun cancelClarify(requestId: String) {
+        val request = liveRequests[requestId]
+        if (request?.canonical == true) {
+            answerClarify(requestId, requestId, null)
+            return
+        }
+        replyTo(requestId) { JSONObject() }
+    }
+
+    /** Approval verdict — a reply frame to the srq id with the chosen scope.
+     *  `session`/`always` apply to every pending approval at once (`all: true`);
+     *  `once`/`deny` answer just this request. The canonical wire carries just
+     *  the choice; scope widening is the server's business there. */
+    fun answerApproval(requestId: String, choice: String) {
+        val request = liveRequests[requestId]
+        if (request?.canonical == true) {
+            scopeLaunch {
+                rpc(
+                    "approval.respond",
+                    JSONObject()
+                        .put("session_id", attached ?: return@scopeLaunch)
+                        .put("execution_generation", request.generation ?: return@scopeLaunch)
+                        .put("prompt_id", requestId)
+                        .put("choice", choice),
+                    15000
+                )
+                liveRequests.remove(requestId)
+            }
+            return
+        }
+        replyTo(requestId) {
+            JSONObject().put("choice", choice).put("all", choice == "session" || choice == "always")
+        }
+    }
+
+    private fun replyTo(requestId: String, result: () -> JSONObject) {
+        val frame = JSONObject()
+            .put("jsonrpc", "2.0")
+            .put("id", requestId)
+            .put("result", result())
+        socket?.send(frame.toString())
+    }
+
+    /** rpc()/replyTo() may be called from the main thread (button taps); the
+     *  sends themselves are cheap but the lock RPC blocks, so push it off. */
+    private fun scopeLaunch(block: () -> Unit) {
+        Thread { runCatching(block) }.start()
     }
 
     // ── Plumbing ─────────────────────────────────────────────────────────────
@@ -447,7 +887,9 @@ data class ChatMessage(
     val content: String,
     val toolName: String?,
     val reasoning: String?,
-    val timestamp: Double
+    val timestamp: Double,
+    /** A compaction summary: rendered as one collapsed line, not the blob. */
+    val compacted: Boolean = false
 ) {
     val isUser: Boolean get() = role == "user"
     val isTool: Boolean get() = role == "tool"
@@ -455,7 +897,14 @@ data class ChatMessage(
     companion object {
         fun from(json: JSONObject): ChatMessage? {
             val role = json.optString("role").ifEmpty { return null }
-            val content = json.optString("content")
+            // display_content is the server's human-facing projection (compaction
+            // summaries, steers): when present it wins over the model-facing
+            // `content`, which for a summary is a 20K+ service blob.
+            val content = json.optString("display_content").ifEmpty {
+                json.optString("content")
+            }
+            val compacted = json.optBoolean("_compressed_summary", false) ||
+                content.startsWith("[CONTEXT COMPACTION")
             val toolName = if (json.isNull("tool_name")) null else json.optString("tool_name").ifEmpty { null }
             val reasoning = if (json.isNull("reasoning")) null
             else json.optString("reasoning").ifEmpty { null }
@@ -468,6 +917,7 @@ data class ChatMessage(
             return ChatMessage(
                 role = role,
                 content = content,
+                compacted = compacted,
                 toolName = toolName,
                 reasoning = reasoning,
                 timestamp = json.optDouble("timestamp", 0.0)

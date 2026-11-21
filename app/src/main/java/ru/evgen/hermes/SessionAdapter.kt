@@ -21,12 +21,17 @@ class SessionAdapter(
     private val rows = mutableListOf<Row>()
 
     sealed class Row {
+        data class Resume(val session: Session) : Row()
         data class Header(val text: String) : Row()
         data class Item(val session: Session) : Row()
     }
 
     fun submit(sessions: List<Session>) {
         rows.clear()
+        // The desktop sidebar needs a click to get back to the conversation
+        // the user just left; the phone gets it in one tap at the very top.
+        sessions.firstOrNull { it.title.isNotEmpty() && it.messageCount > 0 }
+            ?.let { rows += Row.Resume(it) }
         val pinned = sessions.filter { it.pinned }.sortedByDescending { it.lastActive }
         val rest = sessions.filter { !it.pinned }.sortedByDescending { it.lastActive }
         if (pinned.isNotEmpty()) {
@@ -49,21 +54,25 @@ class SessionAdapter(
 
     override fun getItemCount() = rows.size
 
-    override fun getItemViewType(position: Int) =
-        if (rows[position] is Row.Header) TYPE_HEADER else TYPE_ITEM
+    override fun getItemViewType(position: Int) = when (rows[position]) {
+        is Row.Header -> TYPE_HEADER
+        is Row.Resume -> TYPE_RESUME
+        is Row.Item -> TYPE_ITEM
+    }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
         val inflater = LayoutInflater.from(parent.context)
-        return if (viewType == TYPE_HEADER) {
-            HeaderHolder(inflater.inflate(R.layout.item_section, parent, false))
-        } else {
-            ItemHolder(inflater.inflate(R.layout.item_session, parent, false))
+        return when (viewType) {
+            TYPE_HEADER -> HeaderHolder(inflater.inflate(R.layout.item_section, parent, false))
+            TYPE_RESUME -> ResumeHolder(inflater.inflate(R.layout.item_resume, parent, false))
+            else -> ItemHolder(inflater.inflate(R.layout.item_session, parent, false))
         }
     }
 
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
         when (val row = rows[position]) {
             is Row.Header -> (holder as HeaderHolder).bind(row.text)
+            is Row.Resume -> (holder as ResumeHolder).bind(row.session)
             is Row.Item -> (holder as ItemHolder).bind(row.session)
         }
     }
@@ -75,14 +84,25 @@ class SessionAdapter(
         }
     }
 
+    /** One tap straight into the last conversation. */
+    private inner class ResumeHolder(view: View) : RecyclerView.ViewHolder(view) {
+        private val label = view as TextView
+        fun bind(session: Session) {
+            label.text = "Продолжить: ${session.title}"
+            itemView.setOnClickListener { onOpen(session) }
+        }
+    }
+
     private inner class ItemHolder(view: View) : RecyclerView.ViewHolder(view) {
         private val title: TextView = view.findViewById(R.id.title)
         private val meta: TextView = view.findViewById(R.id.meta)
+        private val time: TextView = view.findViewById(R.id.time)
         private val pin: TextView = view.findViewById(R.id.pin)
 
         fun bind(session: Session) {
             title.text = session.title
             meta.text = metaLine(session)
+            time.text = relative(session.lastActive)
             pin.visibility = if (session.pinned) View.VISIBLE else View.GONE
             itemView.setOnClickListener { onOpen(session) }
             itemView.setOnLongClickListener { v ->
@@ -99,7 +119,7 @@ class SessionAdapter(
         parts += relative(session.lastActive)
         val preview = session.preview
         return if (preview.isNotEmpty() && preview != session.title) {
-            parts.joinToString(" · ") + "\n" + preview
+            parts.dropLast(1).joinToString(" · ") + "\n" + preview
         } else {
             parts.joinToString(" · ")
         }
@@ -148,5 +168,6 @@ class SessionAdapter(
     companion object {
         private const val TYPE_HEADER = 0
         private const val TYPE_ITEM = 1
+        private const val TYPE_RESUME = 2
     }
 }

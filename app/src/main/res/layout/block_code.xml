@@ -51,6 +51,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:fontFamily="monospace"
+            android:lineSpacingMultiplier="1.35"
             android:textColor="@color/code_text"
             android:textIsSelectable="true"
             android:textSize="13sp" />

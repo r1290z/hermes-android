@@ -27,9 +27,13 @@ object Markdown {
     sealed class Block {
         data class Paragraph(val text: String) : Block()
         data class Heading(val level: Int, val text: String) : Block()
-        data class Bullets(val items: List<String>, val ordered: Boolean) : Block()
+        /** `level`: 0 top, 1 nested once, 2 nested twice; `marker` is "•" for
+         *  bullets or the literal number ("3.") for ordered items. */
+        data class BulletItem(val level: Int, val marker: String, val text: String)
+        data class Bullets(val items: List<BulletItem>, val ordered: Boolean) : Block()
         data class Quote(val text: String) : Block()
         data class Code(val language: String, val code: String) : Block()
+        data class Table(val headers: List<String>, val rows: List<List<String>>) : Block()
         data class Rule(val dummy: Int = 0) : Block()
     }
 
@@ -58,6 +62,42 @@ object Markdown {
 
             if (line.isBlank()) { i++; continue }
 
+            // Table: header row of pipes plus a |---|---| separator under it,
+            // or an ASCII box table (+----+ borders, cells padded with spaces).
+            val asciiTable = i + 1 < lines.size && line.trim().matches(Regex("^\\+[-=+:\\s]+\\+$")) &&
+                lines[i + 1].count { it == '|' } >= 2
+            if (asciiTable) {
+                val rows = mutableListOf<List<String>>()
+                var j = i
+                while (j < lines.size) {
+                    val l = lines[j].trim()
+                    if (l.matches(Regex("^\\+[-=+:\\s]+\\+$"))) { j++; continue }
+                    if (l.count { it == '|' } >= 2) { rows += splitRow(l); j++; continue }
+                    break
+                }
+                if (rows.isNotEmpty()) {
+                    blocks += Block.Table(rows.first(), rows.drop(1))
+                    i = j
+                    continue
+                }
+            }
+            if (i + 1 < lines.size && line.count { it == '|' } >= 2 &&
+                tableSeparator(lines[i + 1]) != null
+            ) {
+                val headers = splitRow(line)
+                val rows = mutableListOf<List<String>>()
+                var j = i + 2
+                while (j < lines.size && lines[j].count { it == '|' } >= 2) {
+                    rows += splitRow(lines[j])
+                    j++
+                }
+                if (headers.isNotEmpty()) {
+                    blocks += Block.Table(headers, rows)
+                    i = j
+                    continue
+                }
+            }
+
             if (line.trim().matches(Regex("^(-{3,}|\\*{3,}|_{3,})$"))) {
                 blocks += Block.Rule()
                 i++
@@ -74,10 +114,18 @@ object Markdown {
             val bullet = Regex("^\\s*([-*+]|\\d+[.)])\\s+(.*)$").find(line)
             if (bullet != null) {
                 val ordered = bullet.groupValues[1].first().isDigit()
-                val items = mutableListOf<String>()
+                val items = mutableListOf<Block.BulletItem>()
+                var number = 0
                 while (i < lines.size) {
                     val m = Regex("^\\s*([-*+]|\\d+[.)])\\s+(.*)$").find(lines[i]) ?: break
                     if (m.groupValues[1].first().isDigit() != ordered) break
+                    val indent = lines[i].takeWhile { it == ' ' }.length
+                    // Two levels: 0-1 spaces = top, deeper (3+) = nested. A list
+                    // where every item sits on the same indent stays flat.
+                    val level = if (indent >= 3) 1 else 0
+                    if (m.groupValues[1].first().isDigit()) number++ else number = 0
+                    val marker = if (ordered) "$number." else
+                        if (level == 1) "◦" else "•"
                     var text = m.groupValues[2]
                     // A wrapped continuation line belongs to the item above it.
                     var j = i + 1
@@ -88,7 +136,7 @@ object Markdown {
                         text += " " + lines[j].trim()
                         j++
                     }
-                    items += text
+                    items += Block.BulletItem(level, marker, text)
                     i = j
                 }
                 blocks += Block.Bullets(items, ordered)
@@ -111,7 +159,8 @@ object Markdown {
                 fenceOf(lines[i]) == null &&
                 !lines[i].trimStart().startsWith(">") &&
                 Regex("^#{1,6}\\s").find(lines[i]) == null &&
-                Regex("^\\s*([-*+]|\\d+[.)])\\s+").find(lines[i]) == null
+                Regex("^\\s*([-*+]|\\d+[.)])\\s+").find(lines[i]) == null &&
+                lines[i].count { it == '|' } < 2
             ) {
                 if (para.isNotEmpty()) para.append('\n')
                 para.append(lines[i])
@@ -125,6 +174,24 @@ object Markdown {
     private fun fenceOf(line: String): String? {
         val trimmed = line.trimStart()
         return if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) trimmed.take(3) else null
+    }
+
+    /** `| --- | :---: |` or an ASCII border `+----+----+` → true; else null. */
+    private fun tableSeparator(line: String): Boolean? {
+        val t = line.trim()
+        if (t.matches(Regex("^\\+[-=+:\\s]+\\+$"))) return true
+        if (t.count { it == '|' } < 2) return null
+        val cells = splitRow(t)
+        if (cells.isEmpty()) return null
+        return cells.all { it.matches(Regex(":?-{2,}:?")) }
+    }
+
+    /** `| a | b |` → [a, b]. Leading/trailing pipes are optional. */
+    private fun splitRow(line: String): List<String> {
+        var t = line.trim()
+        if (t.startsWith("|")) t = t.substring(1)
+        if (t.endsWith("|")) t = t.substring(0, t.length - 1)
+        return t.split('|').map { it.trim() }
     }
 
     /**
@@ -231,12 +298,13 @@ object Markdown {
     }
 
     /** Bullets get a real marker; a TextView cannot draw one by itself. */
-    fun bullets(items: List<String>, ordered: Boolean): CharSequence {
+    fun bullets(items: List<Block.BulletItem>, ordered: Boolean): CharSequence {
         val out = SpannableStringBuilder()
         items.forEachIndexed { index, item ->
             if (index > 0) out.append('\n')
-            out.append(if (ordered) "${index + 1}. " else "•  ")
-            out.append(inline(item))
+            repeat(item.level) { out.append("   ") }
+            out.append(item.marker).append(' ')
+            out.append(inline(item.text))
         }
         return out
     }
