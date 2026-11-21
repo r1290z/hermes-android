@@ -65,6 +65,11 @@ class ChatActivity : Activity() {
     /** How many history rows are already loaded — the next `offset`. */
     private var olderOffset = 0
     private var loadingOlder = false
+    /** Newest message timestamp already on screen — the poll compares against it. */
+    private var lastSeenMs = 0L
+    private var liveJob: Job? = null
+    /** Throttle for pushing the streaming tail into the ongoing notification. */
+    private var lastNotifyMs = 0L
 
     /** Picked but not yet sent: the content URI, the decoded bytes, the name. */
     private var pendingImage: PendingImage? = null
@@ -127,24 +132,91 @@ class ChatActivity : Activity() {
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
         })
 
-        if (sessionId != null) loadHistory()
+        if (sessionId != null) {
+            loadHistory()
+            startLive(sessionId!!)
+        }
         updateSendState()
+    }
+
+    /**
+     * A notification tap while this screen is already open.
+     *
+     * The activity is `singleTop`, so Android reuses the running instance and
+     * hands the intent here instead of creating a new one. Ignoring it meant a tap
+     * from the shade did nothing visible: the screen kept showing the previous
+     * session, or the session it opened never subscribed to events.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val incoming = intent.getStringExtra(EXTRA_SESSION_ID)
+        val incomingTitle = intent.getStringExtra(EXTRA_SESSION_TITLE)
+        if (incoming == null) return
+        if (incoming != sessionId) {
+            sessionId = incoming
+            title.text = incomingTitle ?: getString(R.string.new_session)
+            adapter.submit(emptyList())
+            olderOffset = 0
+            lastSeenMs = 0
+        }
+        Notifications.cancelWorking(this)
+        loadHistory()
+        startLive(incoming)
+    }
+
+    /**
+     * Makes an opened chat live.
+     *
+     * Two layers, because one is not enough: [ApiClient.attach] subscribes to the
+     * session's events (so a turn running right now streams in), and the poll
+     * catches what events cannot — a turn that finished while the screen was
+     * closed, or a message added from another device. Without this, opening a
+     * chat showed a snapshot and stayed frozen until the user typed.
+     */
+    private fun startLive(id: String) {
+        liveJob?.cancel()
+        liveJob = scope.launch {
+            val attached = withContext(Dispatchers.IO) {
+                api.attach(id) { event -> onEvent(event) }
+            }
+            if (attached) {
+                // A running turn means the stream will do the work; nothing was
+                // missed, but the history may be ahead of what we rendered.
+                loadHistory(keepScroll = true)
+            }
+            while (true) {
+                delay(3000)
+                if (streaming) continue
+                val newest = withContext(Dispatchers.IO) { api.messages(id, 1) }.lastOrNull()
+                    ?: continue
+                if (newest.timestamp * 1000 > lastSeenMs) {
+                    Diag.log("poll", "на сервере новое сообщение — перечитываю")
+                    loadHistory(keepScroll = true)
+                }
+            }
+        }
     }
 
     // ── History ──────────────────────────────────────────────────────────────
 
-    private fun loadHistory() {
+    private fun loadHistory(keepScroll: Boolean = false) {
         val id = sessionId ?: return
-        status.visibility = View.VISIBLE
-        status.text = getString(R.string.loading)
+        if (!keepScroll) {
+            status.visibility = View.VISIBLE
+            status.text = getString(R.string.loading)
+        }
         scope.launch {
             val messages = withContext(Dispatchers.IO) { api.messages(id, PAGE) }
             olderOffset = messages.size
+            lastSeenMs = (messages.maxOfOrNull { it.timestamp } ?: 0.0).let { (it * 1000).toLong() }
             adapter.submit(messages)
             adapter.setOlder(messages.size >= PAGE)
-            status.visibility = if (messages.isEmpty()) View.VISIBLE else View.GONE
-            if (messages.isEmpty()) status.text = getString(R.string.empty_chat)
-            scrollToEnd()
+            if (!keepScroll) {
+                status.visibility = if (messages.isEmpty()) View.VISIBLE else View.GONE
+                if (messages.isEmpty()) status.text = getString(R.string.empty_chat)
+                scrollToEnd()
+            }
         }
     }
 
@@ -376,6 +448,15 @@ class ChatActivity : Activity() {
         if (adapter.itemCount > before) adapter.notifyItemInserted(index)
         pendingIndex = index
         scheduleRefresh()
+        // In the shade, the answer should be readable while it is being written,
+        // not just announced when it is done.
+        if (!resumed && System.currentTimeMillis() - lastNotifyMs > 4000) {
+            lastNotifyMs = System.currentTimeMillis()
+            val tail = adapter.currentAssistantText().takeLast(200).trim()
+            if (tail.isNotEmpty()) {
+                Notifications.showWorking(this, sessionId, title.text.toString(), "…" + tail)
+            }
+        }
     }
 
     private fun onEvent(event: ChatEvent) {
@@ -444,13 +525,26 @@ class ChatActivity : Activity() {
                 status.visibility = View.GONE
                 adapter.notifyDataSetChanged()
                 scrollToEnd()
-                // Away from the screen when the turn ended: the answer is what
-                // the notification should say. On screen: nothing to announce.
+                // Away from the screen when the turn ended: the notification has to
+                // carry the answer itself, not "готово". `lastFinalText` is empty
+                // when the turn was streamed only into deltas, so fall back to what
+                // the server stored.
                 if (!resumed) {
-                    Notifications.showAnswer(
-                        this, sessionId, title.text.toString(),
-                        lastFinalText.take(300)
-                    )
+                    val snippet = lastFinalText.takeIf { it.isNotBlank() }
+                        ?: adapter.currentAssistantText()
+                    if (snippet.isNotBlank()) {
+                        Notifications.showAnswer(this, sessionId, title.text.toString(), snippet.take(400))
+                    } else {
+                        scope.launch {
+                            val stored = withContext(Dispatchers.IO) {
+                                sessionId?.let { api.latestAssistantText(it) }.orEmpty()
+                            }
+                            Notifications.showAnswer(
+                                this@ChatActivity, sessionId, title.text.toString(),
+                                stored.take(400).ifBlank { "Ответ готов" }
+                            )
+                        }
+                    }
                 } else {
                     Notifications.cancelWorking(this)
                 }
@@ -687,10 +781,14 @@ class ChatActivity : Activity() {
     override fun onDestroy() {
         streamJob?.cancel()
         fallbackJob?.cancel()
+        liveJob?.cancel()
         scope.cancel()
         if (liveApi === api) liveApi = null
         api.onRequest = null
         api.onRequestCancel = null
+        // Leaving the screen: stop receiving this session's events, but keep the
+        // socket up so a turn started here still completes and notifies.
+        api.detach()
         super.onDestroy()
     }
 

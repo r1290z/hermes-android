@@ -780,7 +780,72 @@ class ApiClient private constructor(context: Context) {
 
     // ── Replay catch-up ──────────────────────────────────────────────────────
 
-    /** (last_sequence, replay_epoch) per session, from `session.resume`. */
+    /**
+     * Joins a session's live event stream without sending anything.
+     *
+     * Opening a chat used to only fetch history, so a turn that was already
+     * running (started here, from Telegram, or from the desktop) never appeared
+     * until the user typed something. This resumes the session, attaches the
+     * event sink, replays what was missed, and reports any pending questions —
+     * i.e. it makes an opened chat live.
+     */
+    fun attach(sessionId: String, onEvent: (ChatEvent) -> Unit): Boolean {
+        error = null
+        sink = onEvent
+        attachedIds.clear()
+        attachedIds.add(sessionId)
+        droppedLogged = false
+        val resumed = rpc(
+            "session.resume",
+            JSONObject().put("session_id", sessionId).put("omit_messages", true),
+            40000
+        )
+        if (resumed == null) {
+            Diag.log("attach", "resume не удался: ${error ?: "?"}")
+            return false
+        }
+        val liveId = resumed.optString("session_id").ifEmpty { sessionId }
+        if (liveId != sessionId) attachedIds.add(liveId)
+        if (!resumed.isNull("last_sequence") && !resumed.isNull("replay_epoch")) {
+            replayCursor[liveId] = Pair(
+                resumed.optLong("last_sequence"), resumed.optString("replay_epoch")
+            )
+        }
+        executionGeneration = if (resumed.isNull("execution_generation")) null
+        else resumed.optInt("execution_generation")
+        sendCapabilities()
+        openRequests = resumed.optJSONArray("open_requests")?.let { arr ->
+            (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+                .mapNotNull(ServerRequest::fromResumeEntry)
+        } ?: emptyList()
+        openRequests += resumed.optJSONArray("prompts")?.let { arr ->
+            (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+                .mapNotNull(ServerRequest::fromPrompt)
+        } ?: emptyList()
+        for (request in openRequests) {
+            liveRequests[request.requestId] = request
+            onRequest?.let { target -> main.post { target(request) } }
+        }
+        Diag.log("attach", "подписан на сеанс")
+        return true
+    }
+
+    /** Stops delivering events to the closed screen; the socket stays up. */
+    fun detach() {
+        sink = null
+        attachedIds.clear()
+    }
+
+    /** True while a turn is running server-side for this session. */
+    fun isRunning(sessionId: String): Boolean {
+        val resumed = rpc(
+            "session.resume",
+            JSONObject().put("session_id", sessionId).put("omit_messages", true),
+            20000
+        ) ?: return false
+        return resumed.optBoolean("running", false)
+    }
+
     private val replayCursor = ConcurrentHashMap<String, Pair<Long, String>>()
 
     class CatchUpResult(val truncated: Boolean, val applied: Int)
