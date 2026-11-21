@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="splash_bg">#0d1117</color>
+    <color name="icon_bg">#0d1117</color>
+
+    <color name="app_bg">#0d1117</color>
+    <color name="card_bg">#151b23</color>
+    <color name="text_primary">#e6edf3</color>
+    <color name="text_secondary">#8b949e</color>
+    <color name="divider">#232b36</color>
+    <color name="accent">#4c8dff</color>
+    <color name="pressed">#1d2530</color>
+
+    <color name="code_bg">#161d26</color>
+    <color name="code_text">#d7dee8</color>
+    <color name="bubble_user_text">#ffffff</color>
+    <color name="tool_bg">#1a2230</color>
+    <color name="tool_text">#9aa6b5</color>
+    <color name="error_text">#ff8a80</color>
+</resources>

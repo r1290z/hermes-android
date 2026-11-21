@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hermes</string>
+    <string name="sessions">Сеансы</string>
+    <string name="refresh">Обновить</string>
+    <string name="search_hint">Поиск по названию и тексту</string>
+    <string name="new_session">Новый сеанс</string>
+    <string name="pinned">Закреплённые</string>
+    <string name="today">Сегодня</string>
+    <string name="yesterday">Вчера</string>
+    <string name="this_week">На этой неделе</string>
+    <string name="this_month">В этом месяце</string>
+    <string name="earlier">Раньше</string>
+    <string name="nothing_found">Ничего не найдено</string>
+    <string name="loading">Загружаем сеансы…</string>
+    <string name="need_login">Нужно войти в Hermes — открой чат и войди, список подтянется сам</string>
+    <string name="open_chat">Открыть чат</string>
+    <string name="session_actions">Сеанс</string>
+    <string name="pin">Закрепить</string>
+    <string name="unpin">Открепить</string>
+    <string name="rename">Переименовать</string>
+    <string name="delete">Удалить</string>
+    <string name="rename_hint">Название сеанса</string>
+    <string name="cancel">Отмена</string>
+    <string name="deleted">Удалено</string>
+
+    <!-- Native chat -->
+    <string name="back">Назад</string>
+    <string name="send">Отправить</string>
+    <string name="stop">Остановить</string>
+    <string name="composer_hint">Сообщение</string>
+    <string name="copy">Копировать</string>
+    <string name="copied">Скопировано</string>
+    <string name="thinking">Показать размышления</string>
+    <string name="thinking_hide">Скрыть размышления</string>
+    <string name="login_title">Вход в Hermes</string>
+    <string name="login_subtitle">Тот же логин, что у веб-версии. Пароль хранится только на телефоне.</string>
+    <string name="login_user">Логин</string>
+    <string name="login_password">Пароль</string>
+    <string name="login_button">Войти</string>
+    <string name="login_server">Адрес сервера</string>
+    <string name="login_failed">Не удалось войти</string>
+    <string name="logging_in">Входим…</string>
+    <string name="waiting">Агент работает…</string>
+    <string name="empty_chat">Сообщений пока нет</string>
+    <string name="reload">Обновить</string>
+    <string name="logout">Выйти</string>
+</resources>

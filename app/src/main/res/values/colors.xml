@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="splash_bg">#f7f7f7</color>
+    <color name="icon_bg">#f7f7f7</color>
+
+    <!-- Native list surface. Kept close to the webapp's own palette so switching
+         between the list and the chat does not flash a different grey. -->
+    <color name="app_bg">#f7f7f7</color>
+    <color name="card_bg">#ffffff</color>
+    <color name="text_primary">#1f2328</color>
+    <color name="text_secondary">#6b7280</color>
+    <color name="divider">#e5e7eb</color>
+    <color name="accent">#0053fd</color>
+    <color name="pressed">#eef1f5</color>
+
+    <!-- Code cards, tool rows and reasoning blocks. -->
+    <color name="code_bg">#f2f4f7</color>
+    <color name="code_text">#1f2328</color>
+    <color name="bubble_user_text">#ffffff</color>
+    <color name="tool_bg">#eef1f5</color>
+    <color name="tool_text">#4b5563</color>
+    <color name="error_text">#b42318</color>
+</resources>
