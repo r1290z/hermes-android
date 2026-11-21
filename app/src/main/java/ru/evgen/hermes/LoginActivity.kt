@@ -29,7 +29,7 @@ class LoginActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_login)
-        api = ApiClient(this)
+        api = ApiClient.get(this)
 
         server = findViewById(R.id.server)
         user = findViewById(R.id.user)

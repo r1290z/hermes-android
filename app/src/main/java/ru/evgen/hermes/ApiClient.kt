@@ -46,8 +46,14 @@ import java.util.concurrent.atomic.AtomicInteger
  *  - cookies live in SharedPreferences, not in OkHttp's memory jar: Android
  *    kills the process freely and a lost cookie means a login screen in the
  *    middle of reading an answer.
+ *
+ * One instance per process, via [get]. Each instance owns a WebSocket, so an
+ * activity-local client meant the session list and the open chat each held their
+ * own socket to the same session: duplicate events, and `session.interrupt` or a
+ * reconnect in one tearing down the other (three sockets were observed dying at
+ * once in the field). The socket is process-wide state, so the client is too.
  */
-class ApiClient(private val context: Context) {
+class ApiClient private constructor(context: Context) {
 
     private val prefs = context.getSharedPreferences("hermes_api", Context.MODE_PRIVATE)
 
@@ -266,8 +272,22 @@ class ApiClient(private val context: Context) {
         }
     }
 
-    // ── Status ───────────────────────────────────────────────────────────────
+    /**
+     * The last answer the server has stored — the fallback when the socket goes
+     * quiet mid-turn.
+     *
+     * Reads the newest few rows and takes the last assistant one, so a long
+     * session can never hand back its opening message as if it were the answer.
+     * Compaction summaries are skipped: they are not what the user asked for.
+     */
+    fun latestAssistantText(sessionId: String): String {
+        val recent = messages(sessionId, limit = 12)
+        return recent.lastOrNull {
+            !it.isUser && !it.isTool && !it.compacted && it.content.isNotBlank()
+        }?.content.orEmpty()
+    }
 
+    // ── Status ───────────────────────────────────────────────────────────────
     /** Gateway liveness + build: `{ok, version, commit}`. */
     fun health(): JSONObject? = get("/api/health")?.let {
         runCatching { JSONObject(it) }.getOrNull()
@@ -280,11 +300,20 @@ class ApiClient(private val context: Context) {
 
     // ── Messages (REST) ──────────────────────────────────────────────────────
 
-    fun messages(sessionId: String, limit: Int = 200): List<ChatMessage> {
+    fun messages(sessionId: String, limit: Int = 200, offset: Int = 0): List<ChatMessage> {
+        // `order=latest` is not decoration. Without it the endpoint answers
+        // `order: oldest`, i.e. `limit=200` returns the FIRST 200 messages of the
+        // session — on a long session the phone showed the very beginning and new
+        // messages never appeared at all. With it, `limit` means "the last N" and
+        // `offset` walks backwards through the older ones.
+        //
         // inline_images=false: the default inlines every stored attachment as a
         // data:-URI in `content`, so a picture-heavy history drags megabytes of
         // base64. The projection replaces the image part with "[image]" instead.
-        val raw = get("/api/sessions/$sessionId/messages?limit=$limit&inline_images=false") ?: return emptyList()
+        val raw = get(
+            "/api/sessions/$sessionId/messages?limit=$limit&offset=$offset" +
+                "&order=latest&inline_images=false"
+        ) ?: return emptyList()
         val root = runCatching { JSONObject(raw) }.getOrNull() ?: return emptyList()
         val arr = root.optJSONArray("messages") ?: return emptyList()
         val out = mutableListOf<ChatMessage>()
@@ -327,8 +356,12 @@ class ApiClient(private val context: Context) {
     @Volatile private var executionGeneration: Int? = null
 
     /** Only the attached session's events reach the UI: one socket carries the
-     *  traffic of every session this app has touched. */
-    @Volatile private var attached: String? = null
+     *  traffic of every session this app has touched. Two ids per session can be
+     *  live at once (stored row id and live id), so this is a set. */
+    private val attachedIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    /** One Diag line per turn is enough to see a mis-filtered event stream. */
+    @Volatile private var droppedLogged = false
 
     /** Logged once per turn: a token-level log would be useless noise. */
     @Volatile private var sawDelta = false
@@ -406,7 +439,7 @@ class ApiClient(private val context: Context) {
             // to nobody. Replay the gap before anything new can interleave.
             if (catchUpOnOpen) {
                 catchUpOnOpen = false
-                val sid = attached
+                val sid = attachedIds.firstOrNull()
                 val target = sink
                 if (sid != null && target != null) {
                     Thread { runCatching { catchUp(sid, target) } }.apply { isDaemon = true }.start()
@@ -444,7 +477,7 @@ class ApiClient(private val context: Context) {
             openLatch?.countDown()
             Diag.log("socket", "сбой: ${t.javaClass.simpleName} ${t.message ?: ""} http=${response?.code ?: "-"}")
             // A drop mid-turn: the next open must replay what published meanwhile.
-            if (attached != null && sink != null) catchUpOnOpen = true
+            if (attachedIds.isNotEmpty() && sink != null) catchUpOnOpen = true
             for (waiter in waiters.values) waiter.fail()
             waiters.clear()
         }
@@ -496,6 +529,10 @@ class ApiClient(private val context: Context) {
     /** Last RPC error text, for the caller's toast. */
     @Volatile var error: String? = null
 
+    /** A JSON string field, with a JSON null read as "" instead of the literal "null". */
+    private fun str(o: JSONObject, key: String): String =
+        if (o.isNull(key)) "" else o.optString(key)
+
     private fun handleEvent(params: JSONObject) {
         val type = params.optString("type")
         val sid = params.optString("session_id")
@@ -509,8 +546,18 @@ class ApiClient(private val context: Context) {
                 }
             }
         }
-        val bound = attached
-        if (bound != null && sid.isNotEmpty() && sid != bound) return
+        val bound = attachedIds
+        // A session has more than one id in flight: the stored row id the client
+        // asks with, and the live id the gateway answers `session.resume` with.
+        // Filtering on a single value dropped every event whenever those differed,
+        // which on screen is "the answer never arrives until you reload".
+        if (bound.isNotEmpty() && sid.isNotEmpty() && sid !in bound) {
+            if (!droppedLogged) {
+                droppedLogged = true
+                Diag.log("event", "чужой сеанс ${sid.take(14)}… (жду ${bound.joinToString { it.take(14) }})")
+            }
+            return
+        }
         // Canonical control projection: the prompt arrives as an event and is
         // answered by the clarify.respond/approval.respond RPC, not a frame reply.
         if (type == "clarify.request" || type == "approval.request") {
@@ -543,32 +590,37 @@ class ApiClient(private val context: Context) {
             return
         }
         val payload = params.optJSONObject("payload") ?: JSONObject()
+        // `org.json`'s optString turns a JSON null into the literal "null", and the
+        // gateway sends `text: null` in message.complete. Reading it naively put the
+        // word "null" on screen where the answer should be — which is exactly what
+        // the user saw ("ответ исчезает и остаётся null"). Every payload read goes
+        // through `str()` so a null can never become text.
         val event = when (type) {
-            "message.delta" -> payload.optString("text").takeIf { it.isNotEmpty() }?.let { text ->
+            "message.delta" -> str(payload, "text").takeIf { it.isNotEmpty() }?.let { text ->
                 if (!sawDelta) {
                     sawDelta = true
                     Diag.log("event", "первый message.delta")
                 }
                 ChatEvent.Delta(text)
             }
-            "thinking.delta" -> payload.optString("text").takeIf { it.isNotEmpty() }?.let(ChatEvent::Reasoning)
+            "thinking.delta" -> str(payload, "text").takeIf { it.isNotEmpty() }?.let(ChatEvent::Reasoning)
             "tool.start" -> ChatEvent.ToolStarted(
-                payload.optString("name"),
-                payload.optString("context"),
+                str(payload, "name"),
+                str(payload, "context"),
                 payload.optJSONObject("args")?.toString().orEmpty()
             )
             "tool.complete" -> ChatEvent.ToolFinished(
-                payload.optString("name"),
-                payload.optString("context"),
+                str(payload, "name"),
+                str(payload, "context"),
                 payload.optBoolean("is_error")
             )
-            "agent.print" -> payload.optString("text").takeIf { it.isNotBlank() }
+            "agent.print" -> str(payload, "text").takeIf { it.isNotBlank() }
                 ?.let { ChatEvent.Commentary(it) }
-            "status.update" -> payload.optString("text").takeIf { it.isNotBlank() }
+            "status.update" -> str(payload, "text").takeIf { it.isNotBlank() }
                 ?.let { ChatEvent.Commentary(it) }
             "message.complete" -> {
                 Diag.log("event", "message.complete")
-                ChatEvent.Completed(payload.optString("text"))
+                ChatEvent.Completed(str(payload, "text"))
             }
             else -> null
         }
@@ -581,7 +633,7 @@ class ApiClient(private val context: Context) {
 
     fun closeSocket() {
         connected = false
-        attached = null
+        attachedIds.clear()
         sink = null
         socket?.close(1000, "bye")
         socket = null
@@ -601,7 +653,7 @@ class ApiClient(private val context: Context) {
             40000
         ) ?: return null
         val id = result.optString("session_id").ifEmpty { null } ?: return null
-        attached = id
+        attachedIds.clear(); attachedIds.add(id)
         return id
     }
 
@@ -638,7 +690,8 @@ class ApiClient(private val context: Context) {
     ) {
         error = null
         sink = onEvent
-        attached = sessionId
+        attachedIds.clear(); attachedIds.add(sessionId)
+        droppedLogged = false
         sawDelta = false
         val resumed = rpc(
             "session.resume",
@@ -657,7 +710,7 @@ class ApiClient(private val context: Context) {
         val liveId = resumed.optString("session_id").ifEmpty { sessionId }
         if (liveId != sessionId) {
             Diag.log("turn", "live id $liveId (спрашивали ${sessionId.take(18)}…)")
-            attached = liveId
+            attachedIds.add(liveId)
         }
         // The replay cursor: after a socket drop, session.events.since replays
         // exactly the frames this client never saw (bounded ring: 512/4MB).
@@ -743,7 +796,8 @@ class ApiClient(private val context: Context) {
         val cursor = replayCursor[sessionId]
             ?: return CatchUpResult(truncated = true, applied = 0)
         sink = onEvent
-        attached = sessionId
+        attachedIds.clear(); attachedIds.add(sessionId)
+        droppedLogged = false
         sawDelta = false
         val result = rpc(
             "session.events.since",
@@ -789,7 +843,7 @@ class ApiClient(private val context: Context) {
                 rpc(
                     "clarify.respond",
                     JSONObject()
-                        .put("session_id", attached ?: return@scopeLaunch)
+                        .put("session_id", attachedIds.firstOrNull() ?: return@scopeLaunch)
                         .put("execution_generation", request.generation ?: return@scopeLaunch)
                         .put("prompt_id", requestId)
                         .put("answer", answer ?: ""),
@@ -833,7 +887,7 @@ class ApiClient(private val context: Context) {
                 rpc(
                     "approval.respond",
                     JSONObject()
-                        .put("session_id", attached ?: return@scopeLaunch)
+                        .put("session_id", attachedIds.firstOrNull() ?: return@scopeLaunch)
                         .put("execution_generation", request.generation ?: return@scopeLaunch)
                         .put("prompt_id", requestId)
                         .put("choice", choice),
@@ -901,6 +955,14 @@ class ApiClient(private val context: Context) {
         private const val KEY_BASE = "base_url"
         private const val KEY_LOGGED_IN = "logged_in"
         private val JSON = "application/json; charset=utf-8".toMediaType()
+
+        @Volatile private var shared: ApiClient? = null
+
+        /** The process-wide client. Activities come and go; the socket must not. */
+        fun get(context: Context): ApiClient =
+            shared ?: synchronized(this) {
+                shared ?: ApiClient(context.applicationContext).also { shared = it }
+            }
     }
 }
 

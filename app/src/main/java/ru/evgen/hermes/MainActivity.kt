@@ -49,7 +49,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        api = ApiClient(this)
+        api = ApiClient.get(this)
         if (!api.isLoggedIn()) {
             startActivity(Intent(this, LoginActivity::class.java))
             finish()
@@ -285,19 +285,51 @@ class MainActivity : Activity() {
             .show()
     }
 
-    /** The "…" button: the archive lives behind it, logout is the destructive
-     *  end of the list. */
+    /** The "…" button: archive, update, Shizuku state, then the destructive end. */
     private fun showMore() {
+        val shizuku = ShizukuInstall.describe(this)
         AlertDialog.Builder(this)
             .setTitle(R.string.more)
             .setItems(arrayOf<CharSequence>(
                 getString(R.string.archive),
+                "Проверить обновление",
+                "Shizuku: $shizuku",
                 getString(R.string.logout)
             )) { _, which ->
-                if (which == 0) startActivity(Intent(this, ArchiveActivity::class.java))
-                else askLogout()
+                when (which) {
+                    0 -> startActivity(Intent(this, ArchiveActivity::class.java))
+                    1 -> checkForUpdates(manual = true)
+                    2 -> explainShizuku()
+                    else -> askLogout()
+                }
             }
             .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    /** What Shizuku is for and what to do when it is not ready — the status line
+     *  alone says nothing to someone who has not set it up. */
+    private fun explainShizuku() {
+        val text = when (ShizukuInstall.state(this)) {
+            ShizukuInstall.State.READY ->
+                "Shizuku запущен, доступ выдан. Обновления скачиваются и ставятся молча, " +
+                    "без запроса «разрешить установку из этого источника»."
+            ShizukuInstall.State.NO_PERMISSION ->
+                "Shizuku запущен, но приложению ещё не выдан доступ. Нажми " +
+                    "«Проверить обновление» — приложение попросит разрешение в Shizuku, " +
+                    "и дальше обновления пойдут без диалогов системы."
+            ShizukuInstall.State.NOT_RUNNING ->
+                "Shizuku установлен, но служба не запущена. Открой Shizuku и запусти её " +
+                    "(кнопка «Start»), потом нажми «Проверить обновление»."
+            ShizukuInstall.State.NOT_INSTALLED ->
+                "Shizuku не установлен — обновления ставятся обычным установщиком, " +
+                    "с запросом разрешения. Если хочешь обновляться в одно нажатие, " +
+                    "поставь Shizuku."
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Shizuku")
+            .setMessage(text)
+            .setPositiveButton("Понятно", null)
             .show()
     }
 

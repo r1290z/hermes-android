@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Shizuku: a shell-uid install of our own update, no per-source sideload gate. -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
@@ -67,5 +70,26 @@
         <receiver
             android:name=".RequestActionReceiver"
             android:exported="false" />
+
+        <!-- Shizuku's binder handshake. Required for checkSelfPermission /
+             requestPermission / bindUserService to work at all; without it every
+             call throws and the update silently falls back to the installer. -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!-- Started by Shizuku as the shell user, never by this app. Exported
+             because Shizuku (a different package) has to bind it.
+             It is deliberately not an android.app.Service: Shizuku instantiates
+             it in its own process, so lint's Instantiatable check does not apply. -->
+        <service
+            android:name=".UserService"
+            android:exported="true"
+            android:process=":shizuku_service"
+            tools:ignore="Instantiatable" />
     </application>
 </manifest>

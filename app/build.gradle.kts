@@ -22,8 +22,8 @@ android {
         applicationId = "ru.evgen.hermes"
         minSdk = 24
         targetSdk = 34
-        versionCode = 10
-        versionName = "4.5"
+        versionCode = 17
+        versionName = "5.2"
     }
 
     signingConfigs {
@@ -63,6 +63,11 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    // The Shizuku shell bridge is an AIDL service (Shizuku.newProcess is private
+    // in the public API), so AIDL compilation has to be on.
+    buildFeatures {
+        aidl = true
+    }
 }
 
 dependencies {
@@ -74,4 +79,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
+    // Shizuku: install our own update as shell, so the phone never asks for the
+    // per-source sideload permission and the user skips the installer screen.
+    // The `provider` artifact registers the binder bridge the manifest declares.
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
 }

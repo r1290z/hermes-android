@@ -47,6 +47,7 @@ class ChatActivity : Activity() {
     private lateinit var title: TextView
     private lateinit var status: TextView
     private lateinit var adapter: ChatAdapter
+    private lateinit var timeline: TextView
     private lateinit var attach: ImageButton
 
     private var sessionId: String? = null
@@ -56,6 +57,14 @@ class ChatActivity : Activity() {
     private var fallbackJob: Job? = null
     /** Set once the answer came from history: late socket deltas would duplicate it. */
     private var fallbackTook = false
+    /** Any token arrived for the current turn — the stream is alive, no fallback. */
+    private var sawDeltaThisTurn = false
+    /** Last assistant text stored BEFORE this turn: the discriminator that tells a
+     *  new answer from the previous one. Null until captured. */
+    private var baselineText: String? = null
+    /** How many history rows are already loaded — the next `offset`. */
+    private var olderOffset = 0
+    private var loadingOlder = false
 
     /** Picked but not yet sent: the content URI, the decoded bytes, the name. */
     private var pendingImage: PendingImage? = null
@@ -79,7 +88,7 @@ class ChatActivity : Activity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_chat)
 
-        api = ApiClient(this)
+        api = ApiClient.get(this)
         list = findViewById(R.id.messages)
         input = findViewById(R.id.input)
         send = findViewById(R.id.btnSend)
@@ -87,12 +96,18 @@ class ChatActivity : Activity() {
         title = findViewById(R.id.title)
         status = findViewById(R.id.status)
 
-        adapter = ChatAdapter(this) { url -> openLink(url) }
+        adapter = ChatAdapter(this, { url -> openLink(url) }, { loadOlder() })
         adapter.answerHandler = { requestId, a, b -> onAnswer(requestId, a, b) }
         val layout = LinearLayoutManager(this).apply { stackFromEnd = true }
         list.layoutManager = layout
         list.adapter = adapter
         list.itemAnimator = null
+        timeline = findViewById(R.id.timeline)
+        list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
+                if (dy != 0) showTimeline(layout.findFirstVisibleItemPosition())
+            }
+        })
 
         api.onRequest = { request -> runOnUiThread { onRequestArrived(request) } }
         api.onRequestCancel = { requestId -> runOnUiThread { onRequestCancelled(requestId) } }
@@ -123,11 +138,37 @@ class ChatActivity : Activity() {
         status.visibility = View.VISIBLE
         status.text = getString(R.string.loading)
         scope.launch {
-            val messages = withContext(Dispatchers.IO) { api.messages(id) }
+            val messages = withContext(Dispatchers.IO) { api.messages(id, PAGE) }
+            olderOffset = messages.size
             adapter.submit(messages)
+            adapter.setOlder(messages.size >= PAGE)
             status.visibility = if (messages.isEmpty()) View.VISIBLE else View.GONE
             if (messages.isEmpty()) status.text = getString(R.string.empty_chat)
             scrollToEnd()
+        }
+    }
+
+    /**
+     * Loads the page before the oldest message on screen.
+     *
+     * The endpoint pages backwards from the newest message (`order=latest` +
+     * `offset`), so the offset is simply how many rows are already loaded. The
+     * list keeps its scroll anchor at the top so reading does not jump.
+     */
+    private fun loadOlder() {
+        val id = sessionId ?: return
+        if (loadingOlder) return
+        loadingOlder = true
+        adapter.markOlderLoading(true)
+        scope.launch {
+            val page = withContext(Dispatchers.IO) { api.messages(id, PAGE, olderOffset) }
+            loadingOlder = false
+            if (page.isEmpty()) {
+                adapter.setOlder(false)
+                return@launch
+            }
+            olderOffset += page.size
+            adapter.prependOlder(page, hasMore = page.size >= PAGE)
         }
     }
 
@@ -237,12 +278,21 @@ class ChatActivity : Activity() {
         scrollToEnd()
         streaming = true
         fallbackTook = false
+        sawDeltaThisTurn = false
+        baselineText = null
+        // A stale index would repaint a row from the previous turn instead of the
+        // new answer, which looks exactly like "the chat stopped updating".
+        pendingIndex = -1
         updateSendState()
         status.visibility = View.VISIBLE
         status.text = getString(R.string.waiting)
 
         streamJob = scope.launch {
             try {
+                // What the session held before this turn. Captured here, not at
+                // fallback time: by then the answer may already be stored and the
+                // two would be indistinguishable.
+                baselineText = withContext(Dispatchers.IO) { api.latestAssistantText(id) }
                 withContext(Dispatchers.IO) {
                     api.streamTurn(id, text, image?.base64, image?.filename) { event -> onEvent(event) }
                 }
@@ -257,44 +307,48 @@ class ChatActivity : Activity() {
     }
 
     /**
-     * The answer must appear even when the socket goes quiet.
+     * The answer must appear even when the socket goes quiet — but only then.
      *
-     * Streaming is the fast path, not the only one: while a turn is open this
-     * compares what is on screen with what the server has already stored, and if
-     * the stored answer is longer than the screen (or the screen is still empty)
-     * the turn is rendered from history. That covers a dropped socket, a rejected
-     * resume, and a gateway that answers the submit but never publishes deltas —
-     * all of which look identical to "my reply never came".
+     * Streaming is the fast path and the truth; this is a safety net for a
+     * dropped socket, a rejected resume, or a gateway that accepts the submit and
+     * never publishes deltas. Two rules make it safe:
+     *
+     *  - it never fires while deltas are arriving ([sawDeltaThisTurn]);
+     *  - it only accepts a history answer that DIFFERS from the text already
+     *    stored when the turn started ([baselineText]).
+     *
+     * The second rule is the one that was missing: the first version compared the
+     * history against whatever was on screen, which is empty right after the user
+     * bubble is added, so one second after submitting it grabbed the PREVIOUS
+     * answer, rendered it as the new one, and then suppressed the real deltas —
+     * the reply was "lost" by the very code meant to rescue it.
      */
     private fun startHistoryFallback(sessionId: String) {
         fallbackJob?.cancel()
         fallbackJob = scope.launch {
             val deadline = System.currentTimeMillis() + 6 * 60_000
-            var idle = 0
+            var waited = 0
             while (streaming && System.currentTimeMillis() < deadline) {
-                delay(2500)
-                if (!streaming) break
-                val messages = withContext(Dispatchers.IO) { api.messages(sessionId, 10) }
-                val answer = messages.lastOrNull {
-                    !it.isUser && !it.isTool && it.content.isNotBlank()
-                } ?: continue
-                val shown = adapter.currentAssistantText()
-                if (answer.content.length > shown.length) {
-                    Diag.log(
-                        "fallback",
-                        "история ${answer.content.length} симв, на экране ${shown.length} — беру из истории"
-                    )
-                    fallbackTook = true
-                    adapter.setAssistantText(answer.content)
-                    lastFinalText = answer.content
-                    finishFromHistory()
-                    maybeAutoTitle(answer.content)
-                    break
+                delay(3000)
+                if (!streaming || sawDeltaThisTurn) break
+                waited += 3
+                // Said out loud, because "no tokens for a minute" and "tokens are
+                // being dropped" look identical on screen and need different fixes.
+                if (waited == 15) Diag.log("turn", "нет дельт 15 с — ждём")
+                val base = baselineText ?: continue
+                val answerText = withContext(Dispatchers.IO) {
+                    api.latestAssistantText(sessionId)
                 }
-                if (shown.isNotEmpty()) {
-                    idle++
-                    if (idle > 40) break
-                }
+                if (answerText.isEmpty()) continue
+                // Same text as before the turn = nothing new was stored yet.
+                if (answerText == base) continue
+                Diag.log("fallback", "сокет молчит, беру ответ из истории (${answerText.length} симв)")
+                fallbackTook = true
+                adapter.setAssistantText(answerText)
+                lastFinalText = answerText
+                finishFromHistory()
+                maybeAutoTitle(answerText)
+                break
             }
         }
     }
@@ -313,28 +367,45 @@ class ChatActivity : Activity() {
         }
     }
 
+    /** Appends a token to the streaming turn, telling the list when the row is
+     *  new. Without the INSERT a first token creates a row RecyclerView does not
+     *  know about and the answer stays invisible until a full reload. */
+    private fun appendText(text: String) {
+        val before = adapter.itemCount
+        val index = adapter.appendDelta(text)
+        if (adapter.itemCount > before) adapter.notifyItemInserted(index)
+        pendingIndex = index
+        scheduleRefresh()
+    }
+
     private fun onEvent(event: ChatEvent) {
         when (event) {
             is ChatEvent.Started -> runId = event.runId.ifEmpty { runId }
 
             is ChatEvent.Delta -> {
+                // Tokens are arriving: the stream is healthy, so the history
+                // fallback must never take over this turn.
+                sawDeltaThisTurn = true
+                fallbackJob?.cancel()
                 // The turn was already rendered from history; appending tokens now
                 // would show the same sentence twice.
                 if (fallbackTook) return
-                pendingIndex = adapter.appendDelta(event.text)
-                scheduleRefresh()
+                appendText(event.text)
             }
 
             is ChatEvent.Reasoning -> {
-                pendingIndex = adapter.appendReasoning(event.text)
+                val before = adapter.itemCount
+                val index = adapter.appendReasoning(event.text)
+                // A brand-new row needs an INSERT, not a change: RecyclerView keeps
+                // its own item count and silently ignores a row it was never told
+                // about, so the answer only appeared after a full reload.
+                if (adapter.itemCount > before) adapter.notifyItemInserted(index)
+                pendingIndex = index
                 scheduleRefresh()
             }
 
             is ChatEvent.Commentary -> {
-                if (event.text.isNotBlank()) {
-                    pendingIndex = adapter.appendDelta("\n\n" + event.text + "\n\n")
-                    scheduleRefresh()
-                }
+                if (event.text.isNotBlank()) appendText("\n\n" + event.text + "\n\n")
             }
 
             is ChatEvent.ToolStarted -> {
@@ -515,6 +586,27 @@ class ChatActivity : Activity() {
         imm.hideSoftInputFromWindow(input.windowToken, 0)
     }
 
+    /**
+     * Shows which moment sits at the top of the screen while scrolling, then
+     * fades it out. Cancels any pending fade so a fast flick cannot leave the
+     * chip stuck half-transparent.
+     */
+    private fun showTimeline(position: Int) {
+        if (position < 0) return
+        val label = ChatAdapter.timelineLabel(adapter.timeAt(position))
+        if (label.isEmpty()) return
+        timeline.text = label
+        timeline.animate().cancel()
+        timeline.animate().alpha(1f).setDuration(120).start()
+        ui.removeCallbacks(hideTimeline)
+        ui.postDelayed(hideTimeline, 1200)
+    }
+
+    private val hideTimeline = Runnable {
+        timeline.animate().cancel()
+        timeline.animate().alpha(0f).setDuration(300).start()
+    }
+
     private fun openLink(url: String) {
         runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
     }
@@ -606,6 +698,10 @@ class ChatActivity : Activity() {
         const val EXTRA_SESSION_ID = "ru.evgen.hermes.EXTRA_SESSION_ID"
         const val EXTRA_SESSION_TITLE = "ru.evgen.hermes.EXTRA_SESSION_TITLE"
         const val REQ_PICK_IMAGE = 4101
+
+        /** Rows per history page. 200 is ~0.5 MB of JSON on a busy session and
+         *  still parses in well under a second; older pages load on demand. */
+        private const val PAGE = 200
 
         /** For RequestActionReceiver: answers need the socket this activity's
          *  ApiClient holds. Kept until onDestroy — the shade action typically

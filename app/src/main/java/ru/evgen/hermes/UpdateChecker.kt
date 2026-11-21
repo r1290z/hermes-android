@@ -13,6 +13,7 @@ import android.provider.Settings
 import android.webkit.CookieManager
 import android.widget.Toast
 import org.json.JSONObject
+import java.io.File
 
 /**
  * Self-update without a store.
@@ -75,10 +76,15 @@ object UpdateChecker {
     fun offer(activity: Activity, info: Info, currentVersionCode: Int) {
         if (info.versionCode <= currentVersionCode) return
         val notes = if (info.notes.isBlank()) "" else "\n\n${info.notes}"
+        val viaShizuku = ShizukuInstall.isReady()
         activity.runOnUiThread {
             android.app.AlertDialog.Builder(activity)
                 .setTitle("Обновление ${info.versionName}")
-                .setMessage("Установлено: $currentVersionCode, доступно: ${info.versionCode}$notes")
+                .setMessage(
+                    "Установлено: $currentVersionCode, доступно: ${info.versionCode}$notes" +
+                        if (viaShizuku) "\n\nУстановится через Shizuku — без запросов системы."
+                        else ""
+                )
                 .setPositiveButton("Скачать") { _, _ -> download(activity, info) }
                 .setNegativeButton("Позже", null)
                 .show()
@@ -87,21 +93,30 @@ object UpdateChecker {
 
     private fun download(activity: Activity, info: Info) {
         val url = if (info.apkUrl.startsWith("http")) info.apkUrl
-        else activity.let { "https://hermes.example.com/" + info.apkUrl.removePrefix("./").removePrefix("/") }
+        else "https://hermes.example.com/" + info.apkUrl.removePrefix("./").removePrefix("/")
+        // Unique name per attempt. DownloadManager appends "-1" when the target
+        // already exists, and then the path we hand to `pm install` points at a
+        // file that was never written — the install fails and quietly falls back
+        // to the installer, which looks like "Shizuku does not work".
+        val fileName = "hermes-${info.versionCode}-${System.currentTimeMillis()}.apk"
+        val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        val path = File(dir, fileName).absolutePath
         try {
+            // Old attempts pile up otherwise: 2.4 MB each, never opened again.
+            dir.listFiles { f -> f.name.startsWith("hermes-") && f.name.endsWith(".apk") }
+                ?.forEach { runCatching { it.delete() } }
+
             val request = DownloadManager.Request(Uri.parse(url)).apply {
                 setMimeType("application/vnd.android.package-archive")
                 setTitle("Hermes ${info.versionName}")
                 setDescription("Обновление приложения")
                 CookieManager.getInstance().getCookie(url)?.let { addRequestHeader("Cookie", it) }
                 setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                setDestinationInExternalPublicDir(
-                    Environment.DIRECTORY_DOWNLOADS, "hermes-${info.versionCode}.apk"
-                )
+                setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
             }
             val dm = activity.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             val id = dm.enqueue(request)
-            watchCompletion(activity, id)
+            watchCompletion(activity, id, info, path)
             toast(activity, "Скачиваем обновление…")
         } catch (e: Exception) {
             toast(activity, "Не удалось начать загрузку")
@@ -110,7 +125,7 @@ object UpdateChecker {
 
     /** System download broadcasts reach a runtime receiver without any manifest
      *  entry; the app only needs to be alive, and it is — the user just tapped. */
-    private fun watchCompletion(activity: Activity, downloadId: Long) {
+    private fun watchCompletion(activity: Activity, downloadId: Long, info: Info, path: String) {
         unregister(activity)
         val r = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context, intent: Intent) {
@@ -119,7 +134,7 @@ object UpdateChecker {
                 unregister(ctx)
                 val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
                 val uri = dm.getUriForDownloadedFile(downloadId) ?: return
-                install(activity, uri)
+                installFlow(activity, info, uri, path)
             }
         }
         receiver = r
@@ -129,6 +144,38 @@ object UpdateChecker {
         } else {
             @Suppress("UnspecifiedRegisterReceiverFlag")
             activity.registerReceiver(r, filter)
+        }
+    }
+
+    /**
+     * Shizuku first, plain installer second.
+     *
+     * Through Shizuku the update is one silent `pm install` — no "allow from this
+     * source", no installer screen. Every refusal (not installed, service down,
+     * permission denied, pm failed) falls through to the normal path instead of
+     * dead-ending: a missing Shizuku must never block an update.
+     */
+    private fun installFlow(activity: Activity, info: Info, apkUri: Uri, path: String) {
+        if (!ShizukuInstall.isInstalled(activity)) {
+            install(activity, apkUri)
+            return
+        }
+        ShizukuInstall.ensurePermission(activity) { granted ->
+            if (!granted) {
+                toast(activity, "Shizuku не разрешён — обычная установка")
+                install(activity, apkUri)
+                return@ensurePermission
+            }
+            toast(activity, "Устанавливаю через Shizuku…")
+            ShizukuInstall.install(activity, path) { ok, detail ->
+                if (ok) {
+                    toast(activity, "Обновлено — открой Hermes заново")
+                } else {
+                    Diag.log("update", "Shizuku не смог: ${detail.take(120)}")
+                    toast(activity, "Shizuku не смог — обычная установка")
+                    install(activity, apkUri)
+                }
+            }
         }
     }
 

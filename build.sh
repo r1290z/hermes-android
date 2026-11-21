@@ -37,10 +37,19 @@ scp -q -o BatchMode=yes "$SECRETS/hermes-android.jks" "$HOST:$REMOTE_DIR/hermes-
 scp -q -o BatchMode=yes "$SECRETS/hermes-android.properties" "$HOST:$REMOTE_DIR/keystore.properties"
 ssh -o BatchMode=yes "$HOST" "chmod 600 $REMOTE_DIR/hermes-release.jks $REMOTE_DIR/keystore.properties"
 
-ssh -o BatchMode=yes "$HOST" "cd $REMOTE_DIR && \
+# `| tail -40` inside the remote command made the remote shell exit with tail's
+# status, so a failed compile still looked like success and the script happily
+# copied the PREVIOUS APK back. Keep the log tail, but propagate gradle's status.
+BUILD_LOG=$(ssh -o BatchMode=yes "$HOST" "cd $REMOTE_DIR && \
   export ANDROID_HOME=/opt/android-sdk ANDROID_SDK_ROOT=/opt/android-sdk && \
   /root/.gradle/wrapper/dists/gradle-8.11.1-bin/*/gradle-8.11.1/bin/gradle \
-    assembleRelease --no-daemon -q 2>&1 | tail -40"
+    assembleRelease --no-daemon -q 2>&1; echo \"__STATUS=\$?\"")
+echo "$BUILD_LOG" | sed '/^__STATUS=/d' | tail -40
+BUILD_STATUS=$(echo "$BUILD_LOG" | sed -n 's/^__STATUS=//p' | tail -1)
+if [[ "$BUILD_STATUS" != "0" ]]; then
+  echo "ОТКАЗ: сборка упала (gradle exit $BUILD_STATUS)" >&2
+  exit 1
+fi
 
 # A debug-signed build must never reach a phone: it cannot update the installed app.
 SIGNER=$(ssh -o BatchMode=yes "$HOST" "$BUILD_TOOLS/apksigner verify --print-certs \

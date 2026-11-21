@@ -17,6 +17,10 @@ import android.widget.TableRow
 import android.widget.TextView
 import android.widget.Toast
 import androidx.recyclerview.widget.RecyclerView
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 /**
  * The transcript.
@@ -32,33 +36,72 @@ import androidx.recyclerview.widget.RecyclerView
  */
 class ChatAdapter(
     private val context: Context,
-    private val onLink: (String) -> Unit
+    private val onLink: (String) -> Unit,
+    private val onLoadOlder: () -> Unit = {}
 ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
     sealed class Row {
         abstract val key: String
-        data class User(override val key: String, val text: String, val image: Uri? = null) : Row()
+        /** Server timestamp in ms, 0 when unknown (a local, not yet stored row). */
+        abstract val time: Long
+
+        data class User(
+            override val key: String,
+            val text: String,
+            val image: Uri? = null,
+            override val time: Long = 0
+        ) : Row()
         /** A compaction summary: one collapsed line, tap to read the full text. */
-        data class Compacted(override val key: String, val text: String, var expanded: Boolean = false) : Row()
+        data class Compacted(
+            override val key: String,
+            val text: String,
+            var expanded: Boolean = false,
+            override val time: Long = 0
+        ) : Row()
+
+        /** The "load older" row at the top of a long transcript. A session with
+         *  hundreds of messages cannot be loaded in one go without a visible
+         *  stall, so the newest page comes first and this walks backwards. */
+        data class Older(override val key: String, var loading: Boolean = false) : Row() {
+            override val time: Long get() = 0
+        }
+
         data class Assistant(
             override val key: String,
             var text: String,
             var reasoning: String? = null,
-            var streaming: Boolean = false
-        ) : Row()
+            var streaming: Boolean = false,
+            override val time: Long = 0
+        ) : Row() {
+            /** Parsed markdown, kept across rebinds: a long history is re-bound on
+             *  every scroll, and re-parsing a 5K answer each time is what made the
+             *  list feel slow. Cleared whenever `text` changes. */
+            var blocks: List<Markdown.Block>? = null
+            var blocksFor: String = ""
+
+            fun parsed(): List<Markdown.Block> {
+                if (blocks != null && blocksFor == text) return blocks!!
+                val fresh = Markdown.parse(text)
+                blocks = fresh
+                blocksFor = text
+                return fresh
+            }
+        }
         data class Tool(
             override val key: String,
             val name: String,
             val preview: String,
             val body: String,
-            val failed: Boolean
+            val failed: Boolean,
+            override val time: Long = 0
         ) : Row()
         /** A pending clarify/approval card. Lives in the transcript until the
          *  user answers or the server retracts it (`request.cancel`). */
         data class Question(
             override val key: String,
             val request: ServerRequest,
-            var answered: Boolean = false
+            var answered: Boolean = false,
+            override val time: Long = 0
         ) : Row()
     }
 
@@ -68,18 +111,53 @@ class ChatAdapter(
     fun submit(messages: List<ChatMessage>) {
         rows.clear()
         seq = 0
-        for (m in messages) {
-            when {
-                m.compacted -> rows += Row.Compacted("c${seq++}", m.content)
-                m.isUser -> rows += Row.User("u${seq++}", m.content)
-                m.isTool -> rows += Row.Tool(
-                    "t${seq++}", m.toolName ?: "tool",
-                    firstLine(m.content), m.content, false
-                )
-                else -> rows += Row.Assistant("a${seq++}", m.content, m.reasoning)
+        for (m in messages) rows += toRow(m)
+        notifyDataSetChanged()
+    }
+
+    /** Prepend one older page above the transcript. `hasMore` says whether the
+     *  server still has rows before this page. */
+    fun prependOlder(messages: List<ChatMessage>, hasMore: Boolean) {
+        val older = messages.map { toRow(it) }
+        // Index 0 is the "load older" row when it is showing; the page goes
+        // right below it so the button stays on top.
+        val at = if (rows.firstOrNull() is Row.Older) 1 else 0
+        rows.addAll(at, older)
+        setOlder(hasMore)
+        notifyDataSetChanged()
+    }
+
+    /** Shows or hides the "load older" row at the top of the list. */
+    fun setOlder(hasMore: Boolean) {
+        val hasRow = rows.firstOrNull() is Row.Older
+        when {
+            hasMore && !hasRow -> {
+                rows.add(0, Row.Older("older"))
+                notifyItemInserted(0)
+            }
+            !hasMore && hasRow -> {
+                rows.removeAt(0)
+                notifyItemRemoved(0)
             }
         }
-        notifyDataSetChanged()
+    }
+
+    fun markOlderLoading(loading: Boolean) {
+        val row = rows.firstOrNull() as? Row.Older ?: return
+        row.loading = loading
+        notifyItemChanged(0)
+    }
+
+    private fun toRow(m: ChatMessage): Row {
+        val time = (m.timestamp * 1000).toLong()
+        return when {
+            m.compacted -> Row.Compacted("c${seq++}", m.content, time = time)
+            m.isUser -> Row.User("u${seq++}", m.content, time = time)
+            m.isTool -> Row.Tool(
+                "t${seq++}", m.toolName ?: "tool", firstLine(m.content), m.content, false, time
+            )
+            else -> Row.Assistant("a${seq++}", m.content, m.reasoning, time = time)
+        }
     }
 
     /** Appends a token to the streaming turn, creating it if needed. */
@@ -89,7 +167,7 @@ class ChatAdapter(
             last.text += text
             return rows.size - 1
         }
-        rows += Row.Assistant("a${seq++}", text, null, streaming = true)
+        rows += Row.Assistant("a${seq++}", text, null, streaming = true, time = System.currentTimeMillis())
         return rows.size - 1
     }
 
@@ -99,23 +177,32 @@ class ChatAdapter(
             last.reasoning = (last.reasoning ?: "") + text
             return rows.size - 1
         }
-        rows += Row.Assistant("a${seq++}", "", reasoning = text, streaming = true)
+        rows += Row.Assistant(
+            "a${seq++}", "", reasoning = text, streaming = true, time = System.currentTimeMillis()
+        )
         return rows.size - 1
     }
 
     fun startTool(name: String, preview: String, body: String): Int {
-        rows += Row.Tool("t${seq++}", name, preview, body, false)
+        rows += Row.Tool("t${seq++}", name, preview, body, false, System.currentTimeMillis())
         return rows.size - 1
     }
 
     fun finishTurn(content: String) {
         val last = rows.lastOrNull()
         if (last is Row.Assistant) {
-            if (content.isNotBlank()) last.text = content
+            // A blank or literal "null" completion carries no text: the streamed
+            // deltas are the answer and must survive. This is what used to wipe the
+            // reply and leave the word "null" in its place.
+            if (content.isNotBlank() && content != "null") last.text = content
             last.streaming = false
         }
         notifyDataSetChanged()
     }
+
+    /** Timestamp of the row at [position], 0 when it has none — the scroll
+     *  timeline reads this to show what moment the top of the screen is at. */
+    fun timeAt(position: Int): Long = rows.getOrNull(position)?.time ?: 0
 
     /** What the user currently sees as the streaming answer ("" when the turn has
      *  not produced a row yet). The history fallback compares against this to tell
@@ -137,7 +224,7 @@ class ChatAdapter(
     }
 
     fun addLocalUser(text: String, image: Uri? = null) {
-        rows += Row.User("u${seq++}", text, image)
+        rows += Row.User("u${seq++}", text, image, System.currentTimeMillis())
         notifyItemInserted(rows.size - 1)
     }
 
@@ -170,6 +257,7 @@ class ChatAdapter(
         is Row.Tool -> TYPE_TOOL
         is Row.Question -> TYPE_QUESTION
         is Row.Compacted -> TYPE_COMPACTED
+        is Row.Older -> TYPE_OLDER
         else -> TYPE_ASSISTANT
     }
 
@@ -180,6 +268,7 @@ class ChatAdapter(
             TYPE_TOOL -> ToolHolder(inflater.inflate(R.layout.item_chat_tool, parent, false))
             TYPE_QUESTION -> QuestionHolder(inflater.inflate(R.layout.item_question, parent, false))
             TYPE_COMPACTED -> CompactedHolder(inflater.inflate(R.layout.block_text, parent, false))
+            TYPE_OLDER -> OlderHolder(inflater.inflate(R.layout.item_chat_older, parent, false))
             else -> AssistantHolder(inflater.inflate(R.layout.item_chat_assistant, parent, false))
         }
     }
@@ -190,6 +279,7 @@ class ChatAdapter(
             is Row.Tool -> (holder as ToolHolder).bind(row)
             is Row.Question -> (holder as QuestionHolder).bind(row)
             is Row.Compacted -> (holder as CompactedHolder).bind(row)
+            is Row.Older -> (holder as OlderHolder).bind(row)
             is Row.Assistant -> (holder as AssistantHolder).bind(row)
         }
     }
@@ -197,6 +287,7 @@ class ChatAdapter(
     private inner class UserHolder(view: View) : RecyclerView.ViewHolder(view) {
         private val text: TextView = view.findViewById<TextView>(R.id.text)
         private val image: android.widget.ImageView = view.findViewById(R.id.image)
+        private val time: TextView = view.findViewById(R.id.time)
         fun bind(row: Row.User) {
             text.text = row.text
             if (row.image != null) {
@@ -205,10 +296,30 @@ class ChatAdapter(
             } else {
                 image.visibility = View.GONE
             }
+            time.text = when {
+                row.time <= 0 -> ""
+                isToday(row.time) -> format(row.time, "HH:mm")
+                else -> format(row.time, "d MMM, HH:mm")
+            }
         }
     }
 
     /** One collapsed line for a compaction summary; a tap unfolds the real text. */
+    private inner class OlderHolder(view: View) : RecyclerView.ViewHolder(view) {
+        private val label: TextView = view as TextView
+        fun bind(row: Row.Older) {
+            label.text = if (row.loading) "Загружаю…" else "Показать более ранние"
+            label.textSize = 13f
+            label.setTextColor(context.getColor(R.color.accent))
+            label.setOnClickListener {
+                if (row.loading) return@setOnClickListener
+                row.loading = true
+                notifyItemChanged(bindingAdapterPosition)
+                onLoadOlder()
+            }
+        }
+    }
+
     private inner class CompactedHolder(view: View) : RecyclerView.ViewHolder(view) {
         private val text: TextView = view as TextView
         fun bind(row: Row.Compacted) {
@@ -229,11 +340,20 @@ class ChatAdapter(
         private val preview: TextView = view.findViewById(R.id.preview)
         private val body: TextView = view.findViewById(R.id.body)
         private val dot: TextView = view.findViewById(R.id.dot)
+        private val time: TextView = view.findViewById(R.id.time)
 
         fun bind(row: Row.Tool) {
             name.text = row.name
+            time.text = if (row.time <= 0) "" else format(row.time, "HH:mm")
             preview.text = row.preview
-            body.text = row.body
+            // Tool output can be 5K characters of terminal text; it is only shown
+            // when the row is expanded, and a full copy in every recycled view is
+            // what made scrolling a long history stutter.
+            body.text = if (row.body.length > TOOL_BODY_LIMIT) {
+                row.body.take(TOOL_BODY_LIMIT) + "\n… (обрезано)"
+            } else {
+                row.body
+            }
             dot.setTextColor(
                 if (row.failed) context.getColor(R.color.error_text)
                 else context.getColor(R.color.accent)
@@ -247,9 +367,15 @@ class ChatAdapter(
 
     private inner class AssistantHolder(view: View) : RecyclerView.ViewHolder(view) {
         private val blocks: LinearLayout = view.findViewById(R.id.blocks)
+        private val time: TextView = view.findViewById(R.id.time)
 
         fun bind(row: Row.Assistant) {
             blocks.removeAllViews()
+            time.text = when {
+                row.time <= 0 -> ""
+                isToday(row.time) -> format(row.time, "HH:mm")
+                else -> format(row.time, "d MMM, HH:mm")
+            }
             val inflater = LayoutInflater.from(context)
 
             row.reasoning?.takeIf { it.isNotBlank() }?.let { reasoning ->
@@ -275,7 +401,7 @@ class ChatAdapter(
                 return
             }
 
-            for (part in Markdown.parse(row.text)) {
+            for (part in row.parsed()) {
                 when (part) {
                     is Markdown.Block.Paragraph -> {
                         val tv = inflater.inflate(R.layout.block_text, blocks, false) as TextView
@@ -464,5 +590,26 @@ class ChatAdapter(
         private const val TYPE_TOOL = 2
         private const val TYPE_QUESTION = 3
         private const val TYPE_COMPACTED = 4
+        private const val TYPE_OLDER = 5
+
+        /** Characters of tool output kept in the collapsed row. */
+        private const val TOOL_BODY_LIMIT = 1500
+
+        private fun format(ms: Long, pattern: String): String =
+            SimpleDateFormat(pattern, Locale.getDefault()).format(Date(ms))
+
+        private fun isToday(ms: Long): Boolean {
+            val cal = Calendar.getInstance()
+            val today = cal.get(Calendar.DAY_OF_YEAR) to cal.get(Calendar.YEAR)
+            cal.timeInMillis = ms
+            return (cal.get(Calendar.DAY_OF_YEAR) to cal.get(Calendar.YEAR)) == today
+        }
+
+        /** The scroll timeline's label: time for today, date + time otherwise. */
+        fun timelineLabel(ms: Long): String = when {
+            ms <= 0 -> ""
+            isToday(ms) -> format(ms, "HH:mm")
+            else -> format(ms, "d MMM, HH:mm")
+        }
     }
 }
