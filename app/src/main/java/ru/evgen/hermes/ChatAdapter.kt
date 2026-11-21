@@ -406,6 +406,7 @@ class ChatAdapter(
             note.text = when (row.state) {
                 "started" -> context.getString(R.string.steer_started)
                 "queued" -> context.getString(R.string.steer_queued)
+                "not_sent" -> context.getString(R.string.steer_not_sent)
                 "failed" -> context.getString(R.string.steer_failed)
                 else -> context.getString(R.string.steer_sending)
             }

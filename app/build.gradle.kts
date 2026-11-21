@@ -22,8 +22,8 @@ android {
         applicationId = "ru.evgen.hermes"
         minSdk = 24
         targetSdk = 34
-        versionCode = 19
-        versionName = "5.4"
+        versionCode = 21
+        versionName = "6.1"
     }
 
     signingConfigs {

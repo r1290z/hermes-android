@@ -789,8 +789,10 @@ class ChatActivity : Activity() {
             val receipt = withContext(Dispatchers.IO) { api.submitQueued(id, text) }
             val admissionId = receipt?.optString("admission_id").orEmpty()
             if (receipt == null || admissionId.isEmpty()) {
-                // Nothing was queued: without a marker the row looks delivered.
-                adapter.setSteerState(text, "queued")
+                // The server took nothing: restore the text so it is not lost
+                // and mark the row as never sent — "queued" would lie.
+                input.setText(text)
+                adapter.setSteerState(text, "not_sent")
                 return@launch
             }
             val steerResult = withContext(Dispatchers.IO) { api.steerQueued(id, admissionId) }
