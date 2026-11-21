@@ -145,24 +145,39 @@ class ApiClient(private val context: Context) {
      *  local registry (ArchiveStore) only supplements it for rows archived
      *  from this phone that the limit window may cut off; ids the server no
      *  longer has (404/410) are pruned, a network failure is NOT a prune. */
-    fun archivedSessions(context: android.content.Context): List<Session> {
-        val out = sessionsFrom(
-            get("/api/sessions?archived=only&limit=100"),
-            includeArchived = true
-        ).filter { it.archived }.toMutableList()
+    /** Result of the archive fetch: `error` is non-null when the listing
+     *  itself failed (offline / expired cookie) — then `sessions` is empty
+     *  and the registry was NOT touched. */
+    data class ArchivePage(val sessions: List<Session>, val error: String?)
+
+    fun archivedSessions(context: android.content.Context): ArchivePage {
+        val (code, body) = getWithStatus("/api/sessions?archived=only&limit=100")
+        if (body == null) {
+            // The listing failed — bail out before the registry loop so a
+            // network failure never prunes (or slows down) anything.
+            val err = if (code == 302 || code == 401) ARCHIVE_ERR_AUTH else ARCHIVE_ERR_OFFLINE
+            return ArchivePage(emptyList(), err)
+        }
+        val out = sessionsFrom(body, includeArchived = true)
+            .filter { it.archived }.toMutableList()
         val listed = out.map { it.id }.toHashSet()
         for (id in ArchiveStore.ids(context)) {
             if (id in listed) continue
-            val (code, json) = sessionRowStatus(id)
-            if (code == 404 || code == 410) {
+            val (code2, json) = sessionRowStatus(id)
+            if (code2 == 404 || code2 == 410) {
                 ArchiveStore.remove(context, id)  // deleted upstream
                 continue
             }
             val row = json?.let { Session.from(it, includeArchived = true) } ?: continue
-            if (!row.archived) continue  // restored elsewhere
+            if (!row.archived) {
+                // Session was restored elsewhere — its id no longer belongs
+                // in the registry (otherwise every open re-fetches it).
+                ArchiveStore.remove(context, id)
+                continue
+            }
             out += row
         }
-        return out.sortedByDescending { it.lastActive }
+        return ArchivePage(out.sortedByDescending { it.lastActive }, null)
     }
 
     /** `GET /api/sessions/{id}` — works for archived rows too (unlike every
@@ -854,6 +869,19 @@ class ApiClient(private val context: Context) {
     private fun get(path: String): String? =
         execute(Request.Builder().url(base + path).get().build())
 
+    /** Same as get(), but reports the HTTP code (or -1 on IOException) so the
+     *  archive can tell an auth failure (302/401) from no connectivity. */
+    private fun getWithStatus(path: String): Pair<Int, String?> = try {
+        client.newCall(Request.Builder().url(base + path).get().build()).execute().use { r ->
+            when {
+                r.isSuccessful -> r.code to r.body?.string()
+                else -> r.code to null
+            }
+        }
+    } catch (e: IOException) {
+        -1 to null
+    }
+
     private fun execute(request: Request): String? = try {
         client.newCall(request).execute().use { response ->
             when {
@@ -868,6 +896,8 @@ class ApiClient(private val context: Context) {
 
     companion object {
         const val DEFAULT_BASE = "https://hermes.example.com"
+        const val ARCHIVE_ERR_OFFLINE = "Нет связи с сервером"
+        const val ARCHIVE_ERR_AUTH = "Нужно войти заново"
         private const val KEY_BASE = "base_url"
         private const val KEY_LOGGED_IN = "logged_in"
         private val JSON = "application/json; charset=utf-8".toMediaType()

@@ -54,13 +54,19 @@ class ArchiveActivity : Activity() {
 
     private fun load() {
         scope.launch {
-            val sessions = withContext(Dispatchers.IO) { api.archivedSessions(this@ArchiveActivity) }
+            val page = withContext(Dispatchers.IO) { api.archivedSessions(this@ArchiveActivity) }
             // Pruning of registry entries happens inside archivedSessions(),
-            // strictly on 404/410 — a network failure must never wipe the
-            // registry (an offline open of this screen keeps every id).
-            status.visibility = if (sessions.isEmpty()) View.VISIBLE else View.GONE
-            status.text = getString(R.string.archive_empty)
-            adapter.submit(sessions)
+            // strictly on 404/410 or a row restored elsewhere — a network
+            // failure must never wipe the registry (an offline open of this
+            // screen keeps every id).
+            if (page.error != null) {
+                status.visibility = View.VISIBLE
+                status.text = page.error
+            } else {
+                status.visibility = if (page.sessions.isEmpty()) View.VISIBLE else View.GONE
+                status.text = getString(R.string.archive_empty)
+            }
+            adapter.submit(page.sessions)
         }
     }
 
