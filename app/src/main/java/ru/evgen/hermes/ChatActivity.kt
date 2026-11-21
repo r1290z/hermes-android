@@ -50,6 +50,7 @@ class ChatActivity : Activity() {
     private lateinit var adapter: ChatAdapter
     private lateinit var timeline: TextView
     private lateinit var attach: ImageButton
+    private lateinit var modelChip: TextView
 
     private var sessionId: String? = null
     private var streaming = false
@@ -104,6 +105,15 @@ class ChatActivity : Activity() {
         attach = findViewById(R.id.btnAttach)
         title = findViewById(R.id.title)
         status = findViewById(R.id.status)
+        modelChip = findViewById(R.id.btnModel)
+        modelChip.setOnClickListener { showModelPicker() }
+        // The default model name until /api/model/info answers; picked lazily
+        // so an offline phone still opens the chat instantly.
+        scope.launch {
+            val info = withContext(Dispatchers.IO) { api.modelInfo() }
+            val name = info?.optString("model")?.ifEmpty { null }
+            if (name != null && currentModel == null) runOnUiThread { setModelChip(name) }
+        }
 
         adapter = ChatAdapter(this, { url -> openLink(url) }, { loadOlder() })
         adapter.answerHandler = { requestId, a, b -> onAnswer(requestId, a, b) }
@@ -630,6 +640,72 @@ class ChatActivity : Activity() {
         adapter.notifyDataSetChanged()
     }
 
+    // ── Model & modes ────────────────────────────────────────────────────────
+
+    /** What the chip shows; null until something authoritative answered. */
+    private var currentModel: String? = null
+    private var modelPickerOpen = false
+
+    private fun setModelChip(slug: String?) {
+        currentModel = slug?.ifEmpty { null } ?: currentModel
+        modelChip.text = shortModel(currentModel)
+    }
+
+    /** `provider/slug:variant` → `slug`. */
+    private fun shortModel(slug: String?): String {
+        val s = (slug ?: return "модель ?").substringAfter('/')
+        return s.ifEmpty { "модель ?" }
+    }
+
+    /**
+     * The model sheet: search on top, providers as sections, the current model
+     * checked. Picking is optimistic — the chip flips at once and rolls back
+     * with a toast when the gateway refuses.
+     */
+    private fun showModelPicker() {
+        val id = sessionId ?: return
+        if (modelPickerOpen) return
+        modelPickerOpen = true
+        scope.launch {
+            val providers = withContext(Dispatchers.IO) { api.modelOptions() }
+            modelPickerOpen = false
+            if (providers.isEmpty()) {
+                Toast.makeText(this@ChatActivity, api.error ?: "Список моделей не получен", Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            runOnUiThread { ModelPickerDialog(this@ChatActivity, providers, currentModel) { picked -> switchModel(id, picked) }.show() }
+        }
+    }
+
+    private fun switchModel(id: String, slug: String) {
+        if (slug == currentModel) return
+        val previous = currentModel
+        setModelChip(slug)  // optimistic
+        scope.launch {
+            val result = withContext(Dispatchers.IO) { api.setSessionModel(id, slug) }
+            if (result.ok) {
+                setModelChip(result.model ?: slug)
+                Toast.makeText(this@ChatActivity, getString(R.string.model_switched, result.model ?: slug), Toast.LENGTH_SHORT).show()
+            } else {
+                currentModel = previous
+                setModelChip(previous)
+                Toast.makeText(this@ChatActivity, getString(R.string.model_switch_failed, result.reason ?: ""), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    /**
+     * «Ещё» → «Режим»: per-session switches. `approvals.mode` is NOT per-session
+     * on the server — it lands in the profile's config.yaml — so it gets a
+     * warning line of its own.
+     */
+    private fun showModes() {
+        val id = sessionId ?: return
+        ModesDialog(this, api, id) { key, value ->
+            scope.launch(Dispatchers.IO) { api.setMode(id, key, value) }
+        }.show()
+    }
+
     // ── Session actions ──────────────────────────────────────────────────────
 
     private fun showActions() {
@@ -637,6 +713,7 @@ class ChatActivity : Activity() {
         val items = arrayOf<CharSequence>(
             getString(R.string.rename),
             getString(R.string.pin),
+            getString(R.string.modes),
             getString(R.string.delete)
         )
         AlertDialog.Builder(this)
@@ -648,7 +725,8 @@ class ChatActivity : Activity() {
                         withContext(Dispatchers.IO) { api.setPinned(id, true) }
                         Toast.makeText(this@ChatActivity, R.string.pin, Toast.LENGTH_SHORT).show()
                     }
-                    2 -> askDelete(id)
+                    2 -> showModes()
+                    3 -> askDelete(id)
                 }
             }
             .setNegativeButton(R.string.cancel, null)

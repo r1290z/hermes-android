@@ -81,8 +81,11 @@ class StatusBar(
             provider = info.optString("provider").ifEmpty { provider }
             window = info.optLong("effective_context_length", window)
         }
-
         val newest = sessions.firstOrNull()
+        // A model switch inside the chat is per-session; the newest session row
+        // is the honest source for what THAT session now runs — /api/model/info
+        // only knows the profile default.
+        if (!newest?.model.isNullOrEmpty()) model = newest!!.model
         if (newest != null) {
             used = newest.inputTokens
             if (model.isEmpty()) model = newest.model.orEmpty()

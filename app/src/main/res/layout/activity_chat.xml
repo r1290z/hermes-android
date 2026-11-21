@@ -37,6 +37,24 @@
             android:textSize="16sp"
             android:textStyle="bold" />
 
+        <!-- Current model, short form; tap opens the model picker. -->
+        <TextView
+            android:id="@+id/btnModel"
+            android:layout_width="wrap_content"
+            android:layout_height="32dp"
+            android:layout_marginEnd="4dp"
+            android:background="@drawable/bg_chip"
+            android:drawableStart="@drawable/ic_model"
+            android:drawablePadding="6dp"
+            android:drawableTint="@color/text_secondary"
+            android:ellipsize="end"
+            android:gravity="center_vertical"
+            android:maxLines="1"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
+
         <ImageButton
             android:id="@+id/btnReload"
             android:layout_width="44dp"

@@ -96,6 +96,26 @@
                     android:importantForAutofill="no" />
             </LinearLayout>
 
+            <!-- Profile filter chips: «Все» + one per profile, kanban-style.
+                 Hidden until profiles load (a single-profile server has nothing
+                 to filter). -->
+            <HorizontalScrollView
+                android:id="@+id/profileChipsScroll"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingStart="12dp"
+                android:paddingTop="6dp"
+                android:paddingEnd="12dp"
+                android:scrollbars="none"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:id="@+id/profileChips"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal" />
+            </HorizontalScrollView>
+
             <TextView
                 android:id="@+id/status"
                 android:layout_width="match_parent"

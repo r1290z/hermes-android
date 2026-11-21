@@ -102,4 +102,11 @@
     <string name="kanban_complete">Завершить</string>
     <string name="kanban_block">Заблокировать</string>
     <string name="kanban_unblock">Разблокировать</string>
+    <string name="model_pick">Модель</string>
+    <string name="model_search_hint">Поиск модели…</string>
+    <string name="model_switched">Модель: %1$s</string>
+    <string name="model_switch_failed">Модель не сменилась: %1$s</string>
+    <string name="modes">Режим</string>
+    <string name="close">Закрыть</string>
+    <string name="profiles_all">Все</string>
 </resources>

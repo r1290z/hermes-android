@@ -39,6 +39,7 @@ class MainActivity : Activity() {
     private lateinit var adapter: SessionAdapter
 
     private val all = mutableListOf<Session>()
+    private var profiles: List<ApiClient.ProfileInfo> = emptyList()
 
     /** Own scope: plain Activity is not a LifecycleOwner. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -102,6 +103,7 @@ class MainActivity : Activity() {
         findViewById<View>(R.id.statusBar).setOnClickListener { statusBar.showDetails() }
 
         load(force = true)
+        loadProfiles()
         checkForUpdates(manual = false)
     }
 
@@ -167,6 +169,49 @@ class MainActivity : Activity() {
             intent.putExtra(ChatActivity.EXTRA_SESSION_TITLE, it.title)
         }
         startActivity(intent)
+    }
+
+    // ── Profiles ─────────────────────────────────────────────────────────────
+
+    /** Profile chips above the list (kanban-style): «Все» + one per profile.
+     *  The choice scopes every listing/create call and persists. */
+    private fun loadProfiles() {
+        scope.launch {
+            val list = withContext(Dispatchers.IO) { api.profiles() }
+            if (list.isEmpty()) return@launch
+            profiles = list
+            val saved = api.profile
+            // Drop a persisted profile the server no longer has.
+            if (saved != null && list.none { it.name == saved }) api.profile = null
+            renderProfileChips()
+        }
+    }
+
+    private fun renderProfileChips() {
+        val strip = findViewById<android.widget.LinearLayout>(R.id.profileChips) ?: return
+        strip.removeAllViews()
+        val active = api.profile
+        fun chip(label: String, tag: String?, activeNow: Boolean) {
+            val chip = android.widget.TextView(this).apply {
+                text = label
+                textSize = 13f
+                setPadding(36, 12, 36, 12)
+                setBackgroundResource(if (activeNow) R.drawable.bg_chip_active else R.drawable.bg_chip)
+                setTextColor(if (activeNow) android.graphics.Color.WHITE else getColor(R.color.text_primary))
+                setOnClickListener {
+                    api.profile = tag
+                    renderProfileChips()
+                    load(force = true)
+                }
+            }
+            strip.addView(chip)
+            (chip.layoutParams as? android.widget.LinearLayout.LayoutParams)?.marginEnd = 16
+        }
+        chip(getString(R.string.profiles_all), null, active == null)
+        for (p in profiles) {
+            chip(p.displayName.ifEmpty { p.name }, p.name, active == p.name)
+        }
+        strip.parent.let { (it as? View)?.visibility = View.VISIBLE }
     }
 
     // ── Swipes ────────────────────────────────────────────────────────────────

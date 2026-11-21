@@ -135,7 +135,10 @@ class ApiClient private constructor(context: Context) {
     // ── Sessions (REST) ──────────────────────────────────────────────────────
 
     fun sessions(limit: Int = 100): List<Session> {
-        val response = get("/api/sessions?limit=$limit") ?: return emptyList()
+        // `profile` scopes the listing to one profile's gateway; omitted for
+        // the default (and for "all", which is the same thing on this server).
+        val profileQuery = profile?.let { "&profile=$it" } ?: ""
+        val response = get("/api/sessions?limit=$limit$profileQuery") ?: return emptyList()
         val root = runCatching { JSONObject(response) }.getOrNull() ?: return emptyList()
         val arr = root.optJSONArray("sessions") ?: root.optJSONArray("data") ?: return emptyList()
         val out = mutableListOf<Session>()
@@ -287,6 +290,167 @@ class ApiClient private constructor(context: Context) {
         }?.content.orEmpty()
     }
 
+    // ── Profiles / models / per-session modes ────────────────────────────────
+
+    /** The profile every new call goes to. Null = the gateway default.
+     *  Persisted: the chosen profile must survive a process restart. */
+    var profile: String?
+        get() = prefs.getString(KEY_PROFILE, null)
+        set(value) {
+            if (value == null) prefs.edit().remove(KEY_PROFILE).apply()
+            else prefs.edit().putString(KEY_PROFILE, value).apply()
+        }
+
+    class ProfileInfo(
+        val name: String,
+        val displayName: String,
+        val model: String,
+        val gatewayRunning: Boolean,
+        val isDefault: Boolean
+    )
+
+    /** `GET /api/profiles` — the picker's source of truth. */
+    fun profiles(): List<ProfileInfo> {
+        val raw = get("/api/profiles") ?: return emptyList()
+        val root = runCatching { JSONObject(raw) }.getOrNull() ?: return emptyList()
+        val arr = root.optJSONArray("profiles") ?: return emptyList()
+        val out = mutableListOf<ProfileInfo>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val name = o.optString("name")
+            if (name.isEmpty()) continue
+            out += ProfileInfo(
+                name = name,
+                displayName = o.optString("display_name").ifEmpty { name },
+                model = o.optString("model").substringAfter('/'),
+                gatewayRunning = o.optBoolean("gateway_running", false),
+                isDefault = o.optBoolean("is_default", false)
+            )
+        }
+        return out
+    }
+
+    class ModelProvider(
+        val slug: String,
+        val name: String,
+        val models: List<String>,
+        val isCurrent: Boolean,
+        val authenticated: Boolean
+    )
+
+    /** `model.options` over the socket — the model picker's list. */
+    fun modelOptions(): List<ModelProvider> {
+        val result = rpc("model.options", JSONObject(), 25000) ?: return emptyList()
+        val arr = result.optJSONArray("providers") ?: return emptyList()
+        val out = mutableListOf<ModelProvider>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val slug = o.optString("slug")
+            if (slug.isEmpty()) continue
+            val models = mutableListOf<String>()
+            val mArr = o.optJSONArray("models")
+            if (mArr != null) for (j in 0 until mArr.length()) models += mArr.optString(j)
+            out += ModelProvider(
+                slug = slug,
+                name = o.optString("name").ifEmpty { slug },
+                models = models,
+                isCurrent = o.optBoolean("is_current", false),
+                authenticated = o.optBoolean("authenticated", true)
+            )
+        }
+        return out
+    }
+
+    class SessionMutation(val ok: Boolean, val model: String?, val provider: String?, val reason: String?)
+
+    /**
+     * Changes THIS session's model via `session.mutate operation:"model"`.
+     *
+     * `config.set key=model` is forbidden on the shared gateway (4001), and the
+     * config.yaml default must stay untouched anyway — per-session is the only
+     * supported path. `expected_generation` is mandatory (a probe without it
+     * answered `invalid_params`); on `revision_conflict` the reply carries
+     * fresh counters, so the retry loop needs no re-read.
+     */
+    fun setSessionModel(sessionId: String, slug: String): SessionMutation {
+        error = null
+        var revision: Int = -1
+        var generation: Int = -1
+        // The revision fence counters: from the last resume when this socket is
+        // attached to the session, from the REST snapshot otherwise. A conflict
+        // re-reads the snapshot instead of guessing the fresh values.
+        fun readSnapshot(): Boolean {
+            val snapRaw = get("/api/sessions/$sessionId/mutation-snapshot") ?: return false
+            val snap = runCatching { JSONObject(snapRaw) }.getOrNull() ?: return false
+            revision = snap.optInt("runtime_revision", 0)
+            generation = snap.optInt("runtime_generation", 0)
+            sessionCounters[sessionId] = revision to generation
+            return true
+        }
+        val known = sessionCounters[sessionId]
+        if (known != null) {
+            revision = known.first; generation = known.second
+        } else if (!readSnapshot()) return failure()
+        for (attempt in 1..3) {
+            val result = rpc(
+                "session.mutate",
+                JSONObject()
+                    .put("session_id", sessionId)
+                    .put("request_id", "apk-" + System.currentTimeMillis())
+                    .put("expected_revision", revision)
+                    .put("expected_generation", generation)
+                    .put("operation", "model")
+                    .put("payload", JSONObject().put("model", slug)),
+                25000
+            )
+            if (result != null) {
+                val newRev = result.optInt("revision", revision)
+                val newGen = result.optInt("execution_generation", generation)
+                sessionCounters[sessionId] = newRev to newGen
+                return SessionMutation(true, result.optString("model").ifEmpty { slug }, result.optString("provider"), null)
+            }
+            val why = error ?: return failure()
+            // revision_conflict: the answer says the fence moved — re-read the
+            // counters and retry instead of failing the tap.
+            if (why.contains("revision") || why.contains("conflict")) {
+                if (!readSnapshot()) return failure()
+                continue
+            }
+            return SessionMutation(false, null, null, why)
+        }
+        return failure()
+    }
+
+    private fun failure() = SessionMutation(false, null, null, error ?: "Шлюз не ответил")
+
+    /** `config.set` for the per-session mode keys (yolo, reasoning, …). */
+    fun setMode(sessionId: String, key: String, value: String): Boolean {
+        val result = rpc(
+            "config.set",
+            JSONObject()
+                .put("session_id", sessionId)
+                .put("key", key)
+                .put("value", value),
+            15000
+        )
+        return result != null
+    }
+
+    /** `config.get` — the current value of a per-session mode key. Answers
+     *  like `{"value":"0","scope":"session"}` or `{"value":"medium"}`. */
+    fun getMode(sessionId: String, key: String): String? {
+        val result = rpc(
+            "config.get",
+            JSONObject().put("session_id", sessionId).put("key", key),
+            15000
+        ) ?: return null
+        val v = result.opt("value")
+        return when (v) {
+            null -> null
+            else -> v.toString()
+        }
+    }
+
     // ── Status ───────────────────────────────────────────────────────────────
     /** Gateway liveness + build: `{ok, version, commit}`. */
     fun health(): JSONObject? = get("/api/health")?.let {
@@ -354,6 +518,10 @@ class ApiClient private constructor(context: Context) {
     /** Latest `execution_generation` for the attached session: interrupting a
      *  finished turn's generation cannot bleed into the next one. */
     @Volatile private var executionGeneration: Int? = null
+
+    /** Revision-fence counters per session, fed by session.resume and
+     *  session.mutate — what session.mutate needs as expected_*. */
+    private val sessionCounters = ConcurrentHashMap<String, Pair<Int, Int>>()
 
     /** Only the attached session's events reach the UI: one socket carries the
      *  traffic of every session this app has touched. Two ids per session can be
@@ -617,13 +785,13 @@ class ApiClient private constructor(context: Context) {
      *  accepts (`cli|tui|gui|acp|tool|oneshot`) — anything else is a 4001. */
     fun createSession(): String? {
         error = null
-        val result = rpc(
-            "session.create",
-            JSONObject()
-                .put("request_id", "apk-" + System.currentTimeMillis())
-                .put("source", "gui"),
-            40000
-        ) ?: return null
+        val params = JSONObject()
+            .put("request_id", "apk-" + System.currentTimeMillis())
+            .put("source", "gui")
+        // A non-default profile runs its own gateway; without this the session
+        // lands on default and the gateway answers profile_mismatch on resume.
+        profile?.let { params.put("profile", it) }
+        val result = rpc("session.create", params, 40000) ?: return null
         val id = result.optString("session_id").ifEmpty { null } ?: return null
         attachedIds.clear(); attachedIds.add(id)
         return id
@@ -694,6 +862,9 @@ class ApiClient private constructor(context: Context) {
         sendCapabilities()
         executionGeneration = if (resumed.isNull("execution_generation")) null
         else resumed.optInt("execution_generation")
+        if (!resumed.isNull("revision")) {
+            sessionCounters[sessionId] = resumed.optInt("revision") to (executionGeneration ?: 0)
+        }
         openRequests = resumed.optJSONArray("open_requests")?.let { arr ->
             (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
                 .mapNotNull(ServerRequest::fromResumeEntry)
@@ -810,6 +981,9 @@ class ApiClient private constructor(context: Context) {
         }
         executionGeneration = if (resumed.isNull("execution_generation")) null
         else resumed.optInt("execution_generation")
+        if (!resumed.isNull("revision")) {
+            sessionCounters[sessionId] = resumed.optInt("revision") to (executionGeneration ?: 0)
+        }
         sendCapabilities()
         openRequests = resumed.optJSONArray("open_requests")?.let { arr ->
             (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
@@ -1016,6 +1190,7 @@ class ApiClient private constructor(context: Context) {
         const val ARCHIVE_ERR_AUTH = "Нужно войти заново"
         private const val KEY_BASE = "base_url"
         private const val KEY_LOGGED_IN = "logged_in"
+        private const val KEY_PROFILE = "active_profile"
         private val JSON = "application/json; charset=utf-8".toMediaType()
 
         @Volatile private var shared: ApiClient? = null
