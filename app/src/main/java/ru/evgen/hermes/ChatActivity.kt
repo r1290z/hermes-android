@@ -3,6 +3,8 @@ package ru.evgen.hermes
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.speech.RecognizerIntent
+import android.content.ActivityNotFoundException
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -50,6 +52,7 @@ class ChatActivity : Activity() {
     private lateinit var adapter: ChatAdapter
     private lateinit var timeline: TextView
     private lateinit var attach: ImageButton
+    private lateinit var mic: ImageButton
     private lateinit var modelChip: TextView
 
     private var sessionId: String? = null
@@ -103,6 +106,7 @@ class ChatActivity : Activity() {
         send = findViewById(R.id.btnSend)
         steer = findViewById(R.id.btnSteer)
         attach = findViewById(R.id.btnAttach)
+        mic = findViewById(R.id.btnMic)
         title = findViewById(R.id.title)
         status = findViewById(R.id.status)
         modelChip = findViewById(R.id.btnModel)
@@ -140,6 +144,7 @@ class ChatActivity : Activity() {
         send.setOnClickListener { if (streaming) stopTurn() else submit() }
         steer.setOnClickListener { steerDuringTurn() }
         attach.setOnClickListener { pickImage() }
+        mic.setOnClickListener { startSpeech() }
 
         input.addTextChangedListener(object : TextWatcher {
             override fun afterTextChanged(s: Editable?) = updateSendState()
@@ -271,23 +276,48 @@ class ChatActivity : Activity() {
         }.onFailure { Toast.makeText(this, R.string.no_gallery, Toast.LENGTH_SHORT).show() }
     }
 
+    /** System speech recognition: no RECORD_AUDIO permission of our own — the
+     *  recognizer app records, we only get text back. Result is appended to the
+     *  composer, never sent: the user must see and edit it. */
+    private fun startSpeech() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
+            putExtra(RecognizerIntent.EXTRA_PROMPT, getString(R.string.speech_prompt))
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+        }
+        try {
+            startActivityForResult(intent, REQ_SPEECH)
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(this, R.string.speech_unavailable, Toast.LENGTH_SHORT).show()
+        }
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQ_PICK_IMAGE) return
-        if (resultCode != RESULT_OK || data?.data == null) return
-        val uri = data.data!!
-        scope.launch {
-            val decoded = withContext(Dispatchers.IO) { decodeImage(uri) }
-            if (decoded == null) {
-                runOnUiThread { Toast.makeText(this@ChatActivity, R.string.image_too_big, Toast.LENGTH_LONG).show() }
-                return@launch
+        if (requestCode == REQ_PICK_IMAGE) {
+            if (resultCode != RESULT_OK || data?.data == null) return
+            val uri = data.data!!
+            scope.launch {
+                val decoded = withContext(Dispatchers.IO) { decodeImage(uri) }
+                if (decoded == null) {
+                    runOnUiThread { Toast.makeText(this@ChatActivity, R.string.image_too_big, Toast.LENGTH_LONG).show() }
+                    return@launch
+                }
+                pendingImage = decoded
+                runOnUiThread {
+                    showPendingImage()
+                    updateSendState()
+                }
             }
-            pendingImage = decoded
-            runOnUiThread {
-                showPendingImage()
-                updateSendState()
-            }
+        } else if (requestCode == REQ_SPEECH) {
+            if (resultCode != RESULT_OK) return
+            val text = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull { it.isNotBlank() } ?: return
+            input.append((if (input.text.isNotEmpty() && !input.text.last().isWhitespace()) " " else "") + text)
+            input.setSelection(input.text.length)
+            input.requestFocus()
         }
     }
 
@@ -919,6 +949,7 @@ class ChatActivity : Activity() {
         const val EXTRA_SESSION_ID = "ru.evgen.hermes.EXTRA_SESSION_ID"
         const val EXTRA_SESSION_TITLE = "ru.evgen.hermes.EXTRA_SESSION_TITLE"
         const val REQ_PICK_IMAGE = 4101
+        const val REQ_SPEECH = 4102
 
         /** Rows per history page. 200 is ~0.5 MB of JSON on a busy session and
          *  still parses in well under a second; older pages load on demand. */
