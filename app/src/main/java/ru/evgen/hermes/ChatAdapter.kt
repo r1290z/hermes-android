@@ -95,6 +95,16 @@ class ChatAdapter(
             val failed: Boolean,
             override val time: Long = 0
         ) : Row()
+        /** Text the user poured into the RUNNING turn (prompt.submit → queued →
+         *  prompt.steer_queued). Rendered right after the user bubble; `state`
+         *  is "sent" until the steer is admitted, then "started", or "queued"
+         *  when the server kept it for the next turn. */
+        data class Steer(
+            override val key: String,
+            val text: String,
+            var state: String,
+            override val time: Long = 0
+        ) : Row()
         /** A pending clarify/approval card. Lives in the transcript until the
          *  user answers or the server retracts it (`request.cancel`). */
         data class Question(
@@ -103,6 +113,24 @@ class ChatAdapter(
             var answered: Boolean = false,
             override val time: Long = 0
         ) : Row()
+    }
+
+    /** Adds a steer row right below the last user bubble (the stream row stays
+     *  where it is — the steering text belongs to the running turn, not after
+     *  it). Returns the inserted position. */
+    fun addSteer(text: String): Int {
+        val at = rows.indexOfLast { it is Row.User } + 1
+        rows.add(at, Row.Steer("steer-" + ++seq, text, "sent"))
+        notifyItemInserted(at)
+        return at
+    }
+
+    /** Updates a steer row's state chip (sent → started / queued). */
+    fun setSteerState(text: String, state: String) {
+        val i = rows.indexOfLast { it is Row.Steer && it.text == text }
+        if (i < 0) return
+        (rows[i] as Row.Steer).state = state
+        notifyItemChanged(i)
     }
 
     private val rows = mutableListOf<Row>()
@@ -258,6 +286,7 @@ class ChatAdapter(
         is Row.Question -> TYPE_QUESTION
         is Row.Compacted -> TYPE_COMPACTED
         is Row.Older -> TYPE_OLDER
+        is Row.Steer -> TYPE_STEER
         else -> TYPE_ASSISTANT
     }
 
@@ -269,6 +298,7 @@ class ChatAdapter(
             TYPE_QUESTION -> QuestionHolder(inflater.inflate(R.layout.item_question, parent, false))
             TYPE_COMPACTED -> CompactedHolder(inflater.inflate(R.layout.block_text, parent, false))
             TYPE_OLDER -> OlderHolder(inflater.inflate(R.layout.item_chat_older, parent, false))
+            TYPE_STEER -> SteerHolder(inflater.inflate(R.layout.item_chat_steer, parent, false))
             else -> AssistantHolder(inflater.inflate(R.layout.item_chat_assistant, parent, false))
         }
     }
@@ -280,6 +310,7 @@ class ChatAdapter(
             is Row.Question -> (holder as QuestionHolder).bind(row)
             is Row.Compacted -> (holder as CompactedHolder).bind(row)
             is Row.Older -> (holder as OlderHolder).bind(row)
+            is Row.Steer -> (holder as SteerHolder).bind(row)
             is Row.Assistant -> (holder as AssistantHolder).bind(row)
         }
     }
@@ -304,7 +335,22 @@ class ChatAdapter(
         }
     }
 
-    /** One collapsed line for a compaction summary; a tap unfolds the real text. */
+    /** The grey "→ в поток" line: steering text is part of the running turn, so
+     *  it reads as an annotation, not another message. */
+    private inner class SteerHolder(view: View) : RecyclerView.ViewHolder(view) {
+        private val text: TextView = view.findViewById<TextView>(R.id.text)
+        private val note: TextView = view.findViewById<TextView>(R.id.note)
+        fun bind(row: Row.Steer) {
+            text.text = row.text
+            note.text = when (row.state) {
+                "started" -> context.getString(R.string.steer_started)
+                "queued" -> context.getString(R.string.steer_queued)
+                "failed" -> context.getString(R.string.steer_failed)
+                else -> context.getString(R.string.steer_sending)
+            }
+        }
+    }
+
     private inner class OlderHolder(view: View) : RecyclerView.ViewHolder(view) {
         private val label: TextView = view as TextView
         fun bind(row: Row.Older) {
@@ -591,6 +637,7 @@ class ChatAdapter(
         private const val TYPE_QUESTION = 3
         private const val TYPE_COMPACTED = 4
         private const val TYPE_OLDER = 5
+        private const val TYPE_STEER = 6
 
         /** Characters of tool output kept in the collapsed row. */
         private const val TOOL_BODY_LIMIT = 1500

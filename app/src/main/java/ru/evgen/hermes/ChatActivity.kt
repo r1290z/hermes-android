@@ -44,6 +44,7 @@ class ChatActivity : Activity() {
     private lateinit var list: RecyclerView
     private lateinit var input: EditText
     private lateinit var send: ImageButton
+    private lateinit var steer: ImageButton
     private lateinit var title: TextView
     private lateinit var status: TextView
     private lateinit var adapter: ChatAdapter
@@ -70,6 +71,8 @@ class ChatActivity : Activity() {
     private var liveJob: Job? = null
     /** Throttle for pushing the streaming tail into the ongoing notification. */
     private var lastNotifyMs = 0L
+    /** One-time toast so the first steer during a turn is not a surprise. */
+    private var steerHintShown = false
 
     /** Picked but not yet sent: the content URI, the decoded bytes, the name. */
     private var pendingImage: PendingImage? = null
@@ -97,6 +100,7 @@ class ChatActivity : Activity() {
         list = findViewById(R.id.messages)
         input = findViewById(R.id.input)
         send = findViewById(R.id.btnSend)
+        steer = findViewById(R.id.btnSteer)
         attach = findViewById(R.id.btnAttach)
         title = findViewById(R.id.title)
         status = findViewById(R.id.status)
@@ -124,6 +128,7 @@ class ChatActivity : Activity() {
         findViewById<View>(R.id.btnReload).setOnClickListener { loadHistory() }
         findViewById<View>(R.id.btnMore).setOnClickListener { showActions() }
         send.setOnClickListener { if (streaming) stopTurn() else submit() }
+        steer.setOnClickListener { steerDuringTurn() }
         attach.setOnClickListener { pickImage() }
 
         input.addTextChangedListener(object : TextWatcher {
@@ -343,6 +348,42 @@ class ChatActivity : Activity() {
             return
         }
         sendTurn(id, text, image)
+    }
+
+    /**
+     * Pours the composer's text into the RUNNING turn.
+     *
+     * Two RPCs, in order and both required: `prompt.submit` while a turn is
+     * live answers `queued` with an `admission_id`, and only
+     * `prompt.steer_queued {admission_id}` (no text — the server takes it from
+     * the queue) moves it into the current turn. Skip the second and the text
+     * silently becomes the next turn instead.
+     */
+    private fun steerDuringTurn() {
+        val id = sessionId ?: return
+        if (!streaming) { submit(); return }
+        val text = input.text.toString().trim()
+        if (text.isEmpty()) return
+        input.setText("")
+        if (!steerHintShown) {
+            steerHintShown = true
+            Toast.makeText(this, R.string.steer_hint_toast, Toast.LENGTH_SHORT).show()
+        }
+        adapter.addSteer(text)
+        scrollToEnd()
+        scope.launch {
+            val receipt = withContext(Dispatchers.IO) { api.submitQueued(id, text) }
+            val admissionId = receipt?.optString("admission_id").orEmpty()
+            if (receipt == null || admissionId.isEmpty()) {
+                // Nothing was queued: without a marker the row looks delivered.
+                adapter.setSteerState(text, "queued")
+                return@launch
+            }
+            val steerResult = withContext(Dispatchers.IO) { api.steerQueued(id, admissionId) }
+            val state = if (steerResult?.optString("status") == "started") "started"
+                else if (steerResult?.optString("status") == "queued") "queued" else "failed"
+            adapter.setSteerState(text, state)
+        }
     }
 
     private fun sendTurn(id: String, text: String, image: PendingImage? = null) {
@@ -657,6 +698,10 @@ class ChatActivity : Activity() {
     private fun updateSendState() {
         send.setImageResource(if (streaming) R.drawable.ic_stop else R.drawable.ic_send)
         send.contentDescription = getString(if (streaming) R.string.stop else R.string.send)
+        // While a turn runs, "stop" and "steer" are two separate side-by-side
+        // actions — replacing one with the other (or hiding stop) loses one of
+        // them, so both stay visible.
+        steer.visibility = if (streaming) View.VISIBLE else View.GONE
         send.alpha = if (streaming || input.text.isNotBlank() || pendingImage != null) 1f else 0.4f
     }
 

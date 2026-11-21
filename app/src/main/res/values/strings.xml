@@ -29,6 +29,12 @@
     <string name="back">Назад</string>
     <string name="send">Отправить</string>
     <string name="stop">Остановить</string>
+    <string name="steer">В поток</string>
+    <string name="steer_hint_toast">Текст уйдёт в текущий ход</string>
+    <string name="steer_sending">отправляется…</string>
+    <string name="steer_started">→ в поток</string>
+    <string name="steer_queued">в очереди</string>
+    <string name="steer_failed">не попал в ход — в очереди</string>
     <string name="composer_hint">Сообщение</string>
     <string name="copy">Копировать</string>
     <string name="copied">Скопировано</string>

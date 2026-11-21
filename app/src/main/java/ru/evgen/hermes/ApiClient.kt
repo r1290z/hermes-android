@@ -750,6 +750,31 @@ class ApiClient private constructor(context: Context) {
         }
     }
 
+    // ── Steer: text into the RUNNING turn ────────────────────────────────────
+
+    /** Queues a prompt while a turn is already running. The same `prompt.submit`
+     *  RPC the chat uses, but during a turn the receipt comes back `queued` with
+     *  an `admission_id` — the handle `prompt.steer_queued` needs. */
+    fun submitQueued(sessionId: String, text: String): JSONObject? = rpc(
+        "prompt.submit",
+        JSONObject()
+            .put("session_id", sessionId)
+            .put("text", text)
+            .put("submission_id", "apk-" + System.currentTimeMillis()),
+        40000
+    )
+
+    /** Pours a queued prompt into the running turn (it lands between model
+     *  calls, not mid-token). `text` must NOT be passed here: the server takes
+     *  it from the queue entry and rejects a resend with 4001 invalid_params. */
+    fun steerQueued(sessionId: String, admissionId: String): JSONObject? = rpc(
+        "prompt.steer_queued",
+        JSONObject()
+            .put("session_id", sessionId)
+            .put("admission_id", admissionId),
+        25000
+    )
+
     // ── Replay catch-up ──────────────────────────────────────────────────────
 
     /**

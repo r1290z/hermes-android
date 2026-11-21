@@ -186,5 +186,16 @@
             android:contentDescription="@string/send"
             android:src="@drawable/ic_send"
             android:tint="@color/accent" />
+
+        <ImageButton
+            android:id="@+id/btnSteer"
+            android:layout_width="40dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="2dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/steer"
+            android:src="@drawable/ic_steer"
+            android:tint="@color/accent"
+            android:visibility="gone" />
     </LinearLayout>
 </LinearLayout>
