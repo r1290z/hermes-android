@@ -310,27 +310,45 @@ class MainActivity : Activity() {
     /** What Shizuku is for and what to do when it is not ready — the status line
      *  alone says nothing to someone who has not set it up. */
     private fun explainShizuku() {
-        val text = when (ShizukuInstall.state(this)) {
+        val state = ShizukuInstall.state(this)
+        val text = when (state) {
             ShizukuInstall.State.READY ->
                 "Shizuku запущен, доступ выдан. Обновления скачиваются и ставятся молча, " +
                     "без запроса «разрешить установку из этого источника»."
             ShizukuInstall.State.NO_PERMISSION ->
-                "Shizuku запущен, но приложению ещё не выдан доступ. Нажми " +
-                    "«Проверить обновление» — приложение попросит разрешение в Shizuku, " +
-                    "и дальше обновления пойдут без диалогов системы."
+                "Shizuku запущен, но приложению ещё не выдан доступ. Нажми «Дать доступ» — " +
+                    "Shizuku покажет свой диалог, разреши в нём. Или в самом Shizuku открой " +
+                    "раздел «Приложения с доступом» и включи Hermes."
             ShizukuInstall.State.NOT_RUNNING ->
                 "Shizuku установлен, но служба не запущена. Открой Shizuku и запусти её " +
-                    "(кнопка «Start»), потом нажми «Проверить обновление»."
+                    "(кнопка «Start»), потом вернись сюда и нажми «Дать доступ»."
             ShizukuInstall.State.NOT_INSTALLED ->
                 "Shizuku не установлен — обновления ставятся обычным установщиком, " +
                     "с запросом разрешения. Если хочешь обновляться в одно нажатие, " +
                     "поставь Shizuku."
         }
-        AlertDialog.Builder(this)
+        val builder = AlertDialog.Builder(this)
             .setTitle("Shizuku")
             .setMessage(text)
-            .setPositiveButton("Понятно", null)
-            .show()
+            .setNegativeButton("Закрыть", null)
+        // Asking for the grant has to be reachable on its own. It used to happen
+        // only inside an update, so with no newer build available there was no way
+        // to hand the app the permission at all.
+        if (state == ShizukuInstall.State.NO_PERMISSION) {
+            builder.setPositiveButton("Дать доступ") { _, _ -> requestShizuku() }
+        }
+        builder.show()
+    }
+
+    private fun requestShizuku() {
+        ShizukuInstall.ensurePermission(this) { granted ->
+            val message = if (granted) {
+                "Доступ выдан — обновления пойдут без диалогов системы"
+            } else {
+                "Доступ не выдан. Разрешить можно в самом Shizuku: «Приложения с доступом» → Hermes"
+            }
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun askLogout() {
