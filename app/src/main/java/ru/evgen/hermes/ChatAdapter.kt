@@ -49,7 +49,10 @@ class ChatAdapter(
             override val key: String,
             val text: String,
             val image: Uri? = null,
-            override val time: Long = 0
+            override val time: Long = 0,
+            /** Attachment line under the bubble: "name — 1.2 МБ"; display-only. */
+            val fileName: String? = null,
+            val fileSize: Long = 0
         ) : Row()
         /** A compaction summary: one collapsed line, tap to read the full text. */
         data class Compacted(
@@ -284,9 +287,19 @@ class ChatAdapter(
         }
     }
 
-    fun addLocalUser(text: String, image: Uri? = null) {
-        rows += Row.User("u${seq++}", text, image, System.currentTimeMillis())
+    fun addLocalUser(text: String, image: Uri? = null, fileName: String? = null, fileSize: Long = 0): String {
+        val key = "u${seq++}"
+        rows += Row.User(key, text, image, System.currentTimeMillis(), fileName, fileSize)
         notifyItemInserted(rows.size - 1)
+        return key
+    }
+
+    /** Retry button on a failed file row: swaps the note text. */
+    fun setUserFileNote(key: String, note: String) {
+        val idx = rows.indexOfFirst { it.key == key }
+        if (idx < 0) return
+        (rows[idx] as? Row.User)?.let { rows[idx] = it.copy(fileName = note, fileSize = -1) }
+        notifyItemChanged(idx)
     }
 
     /** Adds (or re-shows after reconnect) a request card. Returns its index. */
@@ -351,6 +364,7 @@ class ChatAdapter(
     private inner class UserHolder(view: View) : RecyclerView.ViewHolder(view) {
         private val text: TextView = view.findViewById<TextView>(R.id.text)
         private val image: android.widget.ImageView = view.findViewById(R.id.image)
+        private val fileLine: TextView = view.findViewById(R.id.fileLine)
         private val time: TextView = view.findViewById(R.id.time)
         fun bind(row: Row.User) {
             text.text = row.text
@@ -360,11 +374,23 @@ class ChatAdapter(
             } else {
                 image.visibility = View.GONE
             }
+            if (row.fileName != null) {
+                fileLine.text = if (row.fileSize >= 0) "📎 ${row.fileName} — ${formatSize(row.fileSize)}" else row.fileName
+                fileLine.visibility = View.VISIBLE
+            } else {
+                fileLine.visibility = View.GONE
+            }
             time.text = when {
                 row.time <= 0 -> ""
                 isToday(row.time) -> format(row.time, "HH:mm")
                 else -> format(row.time, "d MMM, HH:mm")
             }
+        }
+
+        private fun formatSize(bytes: Long): String = when {
+            bytes >= 1024 * 1024 -> String.format(java.util.Locale.ROOT, "%.1f МБ", bytes / 1048576.0)
+            bytes >= 1024 -> "${bytes / 1024} КБ"
+            else -> "$bytes Б"
         }
     }
 

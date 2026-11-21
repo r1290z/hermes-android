@@ -836,6 +836,20 @@ class ApiClient private constructor(context: Context) {
         )
     }
 
+    /** Uploads an arbitrary file into the session workspace (gateway's
+     *  `file.attach`); the returned `ref_text` ("@file:…") is what the server
+     *  itself appends to the prompt text, so the client reuses it verbatim. */
+    fun attachFile(sessionId: String, dataUrl: String, name: String): JSONObject? {
+        return rpc(
+            "file.attach",
+            JSONObject()
+                .put("session_id", sessionId)
+                .put("data_url", dataUrl)
+                .put("name", name),
+            90000
+        )
+    }
+
     /**
      * Runs one turn. `onEvent` fires on the main thread.
      *
@@ -850,6 +864,22 @@ class ApiClient private constructor(context: Context) {
         message: String,
         imageBase64: String?,
         imageFilename: String?,
+        onEvent: (ChatEvent) -> Unit
+    ) = streamTurn(sessionId, message, imageBase64, imageFilename, null, null, onEvent)
+
+    /**
+     * File branch: the bytes ride `file.attach` (workspace attachments, any
+     * type) and reach the model as a `ref_text` line the SERVER returns — the
+     * client never invents its own reference format. Any image branch above
+     * stays untouched.
+     */
+    fun streamTurn(
+        sessionId: String,
+        message: String,
+        imageBase64: String?,
+        imageFilename: String?,
+        fileDataUrl: String?,
+        fileName: String?,
         onEvent: (ChatEvent) -> Unit
     ) {
         error = null
@@ -925,6 +955,20 @@ class ApiClient private constructor(context: Context) {
                 JSONObject().put("path", path).put("mime", mime)))
             Diag.log("turn", "attachment: ${path.substringAfterLast('/')}")
         }
+        var promptText = message
+        if (fileDataUrl != null) {
+            val uploaded = attachFile(liveId, fileDataUrl, fileName ?: "file.bin")
+            val refText = uploaded?.optString("ref_text").orEmpty()
+            if (refText.isEmpty()) {
+                val why = error ?: "Файл не прикрепился"
+                Diag.log("turn", "file.attach не удался: $why")
+                main.post { onEvent(ChatEvent.Error(why)) }
+                return
+            }
+            promptText = if (message.isEmpty()) refText else "$message\n$refText"
+            Diag.log("turn", "file: ${uploaded?.optString("path")?.substringAfterLast('/')}")
+        }
+        submitParams.put("text", promptText)
         val submitted = rpc("prompt.submit", submitParams, 40000)
         if (submitted == null) {
             val why = error ?: "Сообщение не отправлено"

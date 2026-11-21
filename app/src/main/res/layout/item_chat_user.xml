@@ -34,6 +34,22 @@
         android:scaleType="centerCrop"
         android:visibility="gone" />
 
+    <!-- Attachment line under the bubble: name and size only, no contents. -->
+    <TextView
+        android:id="@+id/fileLine"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end"
+        android:layout_marginTop="3dp"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:paddingTop="4dp"
+        android:paddingBottom="4dp"
+        android:background="@drawable/bg_chip"
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp"
+        android:visibility="gone" />
+
     <!-- Stamp under the bubble, not inside it: the bubble is the message, the
          time is metadata and should not compete with the text. -->
     <TextView

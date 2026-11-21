@@ -81,6 +81,21 @@
     <string name="speech_prompt">Говори</string>
     <string name="image_too_big">Не удалось подготовить картинку</string>
 
+    <!-- Files -->
+    <string name="attach_photo">Фото</string>
+    <string name="attach_file">Файл</string>
+    <string name="attach_menu_title">Что прикрепить?</string>
+    <string name="no_file_picker">Нет приложения для выбора файлов</string>
+    <string name="file_too_big">Файл больше 20 МБ — не отправлю</string>
+    <string name="file_read_failed">Не удалось прочитать файл</string>
+    <string name="file_send_confirm">Отправить «%1$s» (%2$s)?</string>
+
+    <string name="sending_file">Отправляю файл…</string>
+    <string name="file_sent">Отправлено</string>
+    <string name="file_rejected">Сервер не принял файл</string>
+    <string name="no_connection">Нет связи</string>
+    <string name="retry">Повторить</string>
+
     <!-- Compaction -->
     <string name="compacted_summary">Свёрнуто: предыдущие сообщения сжаты в сводку</string>
 

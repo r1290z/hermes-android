@@ -110,8 +110,17 @@ class ChatActivity : Activity() {
 
     /** Picked but not yet sent: the content URI, the decoded bytes, the name. */
     private var pendingImage: PendingImage? = null
+    /** Same for the file branch: raw bytes kept as a data URL only up to the
+     *  20 MB cap, plus the display name/size for the bubble line. */
+    private var pendingFile: PendingFile? = null
+    /** The last failed file turn, so «Повторить» can resend it verbatim. */
+    private var failedFile: PendingFile? = null
+    private var failedText: String = ""
+    private var fileRowKey: String? = null
 
     class PendingImage(val uri: Uri, val base64: String, val filename: String)
+
+    class PendingFile(val uri: Uri, val name: String, val size: Long, val dataUrl: String)
 
     private val ui = Handler(Looper.getMainLooper())
     private var pendingIndex = -1
@@ -189,7 +198,7 @@ class ChatActivity : Activity() {
         })
         send.setOnClickListener { if (streaming) stopTurn() else submit() }
         steer.setOnClickListener { steerDuringTurn() }
-        attach.setOnClickListener { pickImage() }
+        attach.setOnClickListener { showAttachMenu() }
         mic.setOnClickListener { startSpeech() }
 
         input.addTextChangedListener(object : TextWatcher {
@@ -515,6 +524,59 @@ class ChatActivity : Activity() {
         }.onFailure { Toast.makeText(this, R.string.no_gallery, Toast.LENGTH_SHORT).show() }
     }
 
+    /** The paperclip now offers both branches: the working image picker and the
+     *  any-type file picker. Image logic below is untouched on purpose. */
+    private fun showAttachMenu() {
+        val options = arrayOf(getString(R.string.attach_photo), getString(R.string.attach_file))
+        AlertDialog.Builder(this)
+            .setTitle(R.string.attach_menu_title)
+            .setItems(options) { _, which -> if (which == 0) pickImage() else pickFile() }
+            .show()
+    }
+
+    private fun pickFile() {
+        val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+        runCatching {
+            startActivityForResult(Intent.createChooser(intent, getString(R.string.attach_file)), REQ_PICK_FILE)
+        }.onFailure { Toast.makeText(this, R.string.no_file_picker, Toast.LENGTH_SHORT).show() }
+    }
+
+    /** Size for the confirm dialog; adapter has its own copy for the row. */
+    private fun formatFileSize(bytes: Long): String = when {
+        bytes >= 1024 * 1024 -> String.format(java.util.Locale.ROOT, "%.1f МБ", bytes / 1048576.0)
+        bytes >= 1024 -> "${bytes / 1024} КБ"
+        else -> "$bytes Б"
+    }
+
+    /** Streams the picked document into a data URL, refusing anything above
+     *  20 MB BEFORE reading it whole (querySize first, chunked copy after). */
+    private fun readFile(uri: Uri): PendingFile? = runCatching {
+        val size = runCatching {
+            contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+        }.getOrDefault(-1L)
+        if (size > MAX_FILE_BYTES) return@runCatching null
+        var name: String? = null
+        contentResolver.query(uri, null, null, null, null)?.use { c ->
+            if (c.moveToFirst()) name = c.getString(c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME))
+        }
+        val bos = java.io.ByteArrayOutputStream()
+        contentResolver.openInputStream(uri)?.use { ins ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val n = ins.read(buf)
+                if (n < 0) break
+                bos.write(buf, 0, n)
+                if (bos.size() > MAX_FILE_BYTES) return@runCatching null
+            }
+        } ?: return@runCatching null
+        val b64 = android.util.Base64.encodeToString(bos.toByteArray(), android.util.Base64.NO_WRAP)
+        PendingFile(uri, name ?: "file", if (size >= 0) size else bos.size().toLong(),
+            "data:application/octet-stream;base64,$b64")
+    }.getOrNull()
+
     /** System speech recognition: no RECORD_AUDIO permission of our own — the
      *  recognizer app records, we only get text back. Result is appended to the
      *  composer, never sent: the user must see and edit it. */
@@ -550,6 +612,20 @@ class ChatActivity : Activity() {
                     updateSendState()
                 }
             }
+        } else if (requestCode == REQ_PICK_FILE) {
+            if (resultCode != RESULT_OK || data?.data == null) return
+            val uri = data.data!!
+            scope.launch {
+                val picked = withContext(Dispatchers.IO) { readFile(uri) }
+                if (picked == null) {
+                    runOnUiThread {
+                        Toast.makeText(this@ChatActivity, R.string.file_too_big, Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+                // Name and size up front — never send a file sight-unseen.
+                runOnUiThread { confirmFile(picked) }
+            }
         } else if (requestCode == REQ_SPEECH) {
             if (resultCode != RESULT_OK) return
             val text = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
@@ -584,8 +660,7 @@ class ChatActivity : Activity() {
         PendingImage(uri, android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP), name)
     }.getOrNull()
 
-    private fun showPendingImage() {
-        val frame = findViewById<android.widget.FrameLayout>(R.id.attachPreview)
+    private fun showPendingImage() {        val frame = findViewById<android.widget.FrameLayout>(R.id.attachPreview)
         val img = frame.findViewById<android.widget.ImageView>(R.id.attachThumb)
         val remove = frame.findViewById<View>(R.id.attachRemove)
         frame.visibility = View.VISIBLE
@@ -597,16 +672,34 @@ class ChatActivity : Activity() {
         }
     }
 
+    /** Stage the picked file and let the user write an accompanying message;
+     *  send happens through the normal submit() — the file rides along. */
+    private fun confirmFile(picked: PendingFile) {
+        val size = formatFileSize(picked.size)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.attach_file)
+            .setMessage(getString(R.string.file_send_confirm, picked.name, size))
+            .setPositiveButton(R.string.send) { _, _ ->
+                pendingFile = picked
+                input.requestFocus()
+                updateSendState()
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
     private fun submit() {
         val text = input.text.toString().trim()
         if (streaming) return
-        if (text.isEmpty() && pendingImage == null) return
+        if (text.isEmpty() && pendingImage == null && pendingFile == null) return
         input.setText("")
         hideKeyboard()
 
         val image = pendingImage
         pendingImage = null
         findViewById<android.widget.FrameLayout>(R.id.attachPreview).visibility = View.GONE
+        val file = pendingFile
+        pendingFile = null
 
         val id = sessionId
         if (id == null) {
@@ -622,11 +715,11 @@ class ChatActivity : Activity() {
                 }
                 sessionId = created
                 title.text = text.take(60)
-                sendTurn(created, text, image)
+                sendTurn(created, text, image, file)
             }
             return
         }
-        sendTurn(id, text, image)
+        sendTurn(id, text, image, file)
     }
 
     /**
@@ -665,8 +758,8 @@ class ChatActivity : Activity() {
         }
     }
 
-    private fun sendTurn(id: String, text: String, image: PendingImage? = null) {
-        adapter.addLocalUser(text, image?.uri)
+    private fun sendTurn(id: String, text: String, image: PendingImage? = null, file: PendingFile? = null) {
+        fileRowKey = adapter.addLocalUser(text, image?.uri, file?.name, file?.size ?: 0L)
         scrollToEnd()
         streaming = true
         fallbackTook = false
@@ -677,7 +770,11 @@ class ChatActivity : Activity() {
         pendingIndex = -1
         updateSendState()
         status.visibility = View.VISIBLE
-        status.text = getString(R.string.waiting)
+        status.text = getString(if (file != null) R.string.sending_file else R.string.waiting)
+        if (file != null) {
+            failedFile = null
+            failedText = ""
+        }
 
         streamJob = scope.launch {
             try {
@@ -686,7 +783,11 @@ class ChatActivity : Activity() {
                 // two would be indistinguishable.
                 baselineText = withContext(Dispatchers.IO) { api.latestAssistantText(id) }
                 withContext(Dispatchers.IO) {
-                    api.streamTurn(id, text, image?.base64, image?.filename) { event -> onEvent(event) }
+                    api.streamTurn(id, text, image?.base64, image?.filename,
+                        file?.dataUrl, file?.name) { event -> onEvent(event) }
+                }
+                if (file != null) {
+                    runOnUiThread { status.text = getString(R.string.file_sent) }
                 }
             } catch (e: Exception) {
                 runOnUiThread { onEvent(ChatEvent.Error(e.message ?: "Ошибка")) }
@@ -696,6 +797,32 @@ class ChatActivity : Activity() {
         if (!resumed) {
             Notifications.showWorking(this, id, title.text.toString(), getString(R.string.waiting))
         }
+    }
+
+    /** A failed FILE turn keeps the bytes so «Повторить» resends verbatim;
+     *  network vs server refusal is told apart by the RPC error text. */
+    private fun onFileTurnFailed(file: PendingFile, text: String, why: String?) {
+        failedFile = file
+        failedText = text
+        val msg = if (why != null && why.contains("сокет", ignoreCase = true))
+            getString(R.string.no_connection) else getString(R.string.file_rejected)
+        val key = fileRowKey
+        if (key != null) adapter.setUserFileNote(key, "📎 ${file.name} — $msg")
+        status.text = msg
+        val retry = AlertDialog.Builder(this)
+            .setTitle(R.string.retry)
+            .setMessage("${file.name}: $msg")
+            .setPositiveButton(R.string.retry) { _, _ ->
+                val id = sessionId
+                val f = failedFile
+                if (id != null && f != null) {
+                    failedFile = null
+                    sendTurn(id, failedText, null, f)
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .create()
+        retry.show()
     }
 
     /**
@@ -834,7 +961,14 @@ class ChatActivity : Activity() {
                 updateSendState()
                 status.visibility = View.VISIBLE
                 status.text = event.message
-                Toast.makeText(this, event.message, Toast.LENGTH_LONG).show()
+                val f = failedFile
+                if (f != null) {
+                    // The turn carried a file: offer a verbatim retry instead of
+                    // a bare toast the user cannot act on.
+                    onFileTurnFailed(f, failedText, event.message)
+                } else {
+                    Toast.makeText(this, event.message, Toast.LENGTH_LONG).show()
+                }
             }
 
             is ChatEvent.Done -> runOnUiThread {
@@ -1049,7 +1183,7 @@ class ChatActivity : Activity() {
         // actions — replacing one with the other (or hiding stop) loses one of
         // them, so both stay visible.
         steer.visibility = if (streaming) View.VISIBLE else View.GONE
-        send.alpha = if (streaming || input.text.isNotBlank() || pendingImage != null) 1f else 0.4f
+        send.alpha = if (streaming || input.text.isNotBlank() || pendingImage != null || pendingFile != null) 1f else 0.4f
     }
 
     private fun scrollToEnd(force: Boolean = true) {
@@ -1189,6 +1323,10 @@ class ChatActivity : Activity() {
         const val EXTRA_SESSION_TITLE = "ru.evgen.hermes.EXTRA_SESSION_TITLE"
         const val REQ_PICK_IMAGE = 4101
         const val REQ_SPEECH = 4102
+        const val REQ_PICK_FILE = 4103
+        /** Client-side cap for the file branch: below the gateway's 256 MB, the
+         *  phone refuses before burning mobile data on a doomed upload. */
+        const val MAX_FILE_BYTES = 20L * 1024 * 1024
 
         /** Rows per history page. 200 is ~0.5 MB of JSON on a busy session and
          *  still parses in well under a second; older pages load on demand. */
