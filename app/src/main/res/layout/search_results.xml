@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Match list under the search row: time, role, fragment with the match
+     highlighted (bold). Tap jumps to the message in the transcript. -->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/searchScroll"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@color/app_bg"
+    android:elevation="6dp"
+    android:visibility="gone">
+
+    <LinearLayout
+        android:id="@+id/searchResults"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="16dp"
+        android:paddingTop="4dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="8dp" />
+</ScrollView>

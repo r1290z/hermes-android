@@ -112,4 +112,16 @@
     <string name="modes">Режим</string>
     <string name="close">Закрыть</string>
     <string name="profiles_all">Все</string>
+    <string name="chat_search">Поиск в чате</string>
+    <string name="chat_search_hint">Поиск в этом чате…</string>
+    <string name="search_prev">Предыдущее совпадение</string>
+    <string name="search_next">Следующее совпадение</string>
+    <string name="close_search">Закрыть поиск</string>
+    <string name="search_scope">поиск по сеансу: %1$d из %2$d сообщений</string>
+    <string name="search_loading_index">индексирую сеанс…</string>
+    <string name="search_no_matches">Нет совпадений</string>
+    <string name="search_of">%1$d/%2$d</string>
+    <string name="search_role_user">вы</string>
+    <string name="search_role_assistant">ассистент</string>
+    <string name="search_role_tool">инструмент</string>
 </resources>

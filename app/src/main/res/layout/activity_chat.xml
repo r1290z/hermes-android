@@ -25,17 +25,28 @@
             android:src="@drawable/ic_back"
             android:tint="@color/text_primary" />
 
-        <TextView
-            android:id="@+id/title"
+        <!-- In-chat search: the title and the search row share one slot; the
+             search overlays the title while active. -->
+        <FrameLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_marginStart="4dp"
-            android:layout_weight="1"
-            android:ellipsize="end"
-            android:maxLines="1"
-            android:textColor="@color/text_primary"
-            android:textSize="16sp"
-            android:textStyle="bold" />
+            android:layout_weight="1">
+
+            <TextView
+                android:id="@+id/title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:textColor="@color/text_primary"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <include
+                android:id="@+id/searchBar"
+                layout="@layout/search_bar" />
+        </FrameLayout>
 
         <!-- Current model, short form; tap opens the model picker. -->
         <TextView
@@ -54,6 +65,15 @@
             android:paddingEnd="10dp"
             android:textColor="@color/text_secondary"
             android:textSize="12sp" />
+
+        <ImageButton
+            android:id="@+id/btnSearch"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/chat_search"
+            android:src="@drawable/ic_search"
+            android:tint="@color/text_primary" />
 
         <ImageButton
             android:id="@+id/btnReload"
@@ -78,6 +98,11 @@
         android:layout_width="match_parent"
         android:layout_height="1dp"
         android:background="@color/divider" />
+
+    <!-- Search results: a compact list under the header, above the transcript. -->
+    <include
+        android:id="@+id/searchResults"
+        layout="@layout/search_results" />
 
     <FrameLayout
         android:layout_width="match_parent"

@@ -20,4 +20,5 @@
     <color name="tool_bg">#eef1f5</color>
     <color name="tool_text">#4b5563</color>
     <color name="error_text">#b42318</color>
+    <color name="search_highlight">#fff3c4</color>
 </resources>

@@ -27,6 +27,13 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.text.Spannable
+import android.text.SpannableString
+import android.text.style.StyleSpan
+import android.text.style.BackgroundColorSpan
+import android.graphics.Typeface
+import android.widget.LinearLayout
+import android.widget.ScrollView
 
 /**
  * The chat itself — native, no WebView.
@@ -57,6 +64,29 @@ class ChatActivity : Activity() {
 
     private var sessionId: String? = null
     private var streaming = false
+
+    // ── In-chat search ────────────────────────────────────────────────────────
+    // The gateway has no per-session message search (GET /api/sessions/search
+    // matches SESSIONS, not messages, and returns no message ids), so search
+    // runs on the phone: the first query indexes the whole transcript through
+    // the same paged /messages endpoint and filters in memory. The scope line
+    // says so out loud — "поиск по сеансу: N из M сообщений" — instead of
+    // pretending the server did it.
+    private lateinit var searchBar: View
+    private lateinit var searchInput: EditText
+    private lateinit var searchCount: TextView
+    private lateinit var searchScroll: ScrollView
+    private lateinit var searchResults: LinearLayout
+    private var searchOpen = false
+    /** Full transcript, oldest-first, filled once on the first query. */
+    private var transcript: List<ChatMessage> = emptyList()
+    private var transcriptLoading = false
+    /** Server message_count, -1 until fetched. */
+    private var totalMessages = -1
+    private var searchJob: Job? = null
+    private val searchMatches = mutableListOf<ChatMessage>()
+    private var matchIndex = -1
+
     private var runId: String? = null
     private var streamJob: Job? = null
     private var fallbackJob: Job? = null
@@ -124,6 +154,7 @@ class ChatActivity : Activity() {
         val layout = LinearLayoutManager(this).apply { stackFromEnd = true }
         list.layoutManager = layout
         list.adapter = adapter
+        adapter.listRef = list
         list.itemAnimator = null
         timeline = findViewById(R.id.timeline)
         list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
@@ -141,6 +172,21 @@ class ChatActivity : Activity() {
         findViewById<View>(R.id.btnBack).setOnClickListener { finish() }
         findViewById<View>(R.id.btnReload).setOnClickListener { loadHistory() }
         findViewById<View>(R.id.btnMore).setOnClickListener { showActions() }
+
+        searchBar = findViewById(R.id.searchBar)
+        searchInput = findViewById(R.id.searchInput)
+        searchCount = findViewById(R.id.searchCount)
+        searchScroll = findViewById(R.id.searchScroll)
+        searchResults = findViewById(R.id.searchResults)
+        findViewById<View>(R.id.btnSearch).setOnClickListener { openSearch() }
+        findViewById<View>(R.id.btnCloseSearch).setOnClickListener { closeSearch() }
+        findViewById<View>(R.id.btnPrevMatch).setOnClickListener { stepMatch(-1) }
+        findViewById<View>(R.id.btnNextMatch).setOnClickListener { stepMatch(1) }
+        searchInput.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) = scheduleSearch()
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        })
         send.setOnClickListener { if (streaming) stopTurn() else submit() }
         steer.setOnClickListener { steerDuringTurn() }
         attach.setOnClickListener { pickImage() }
@@ -179,6 +225,10 @@ class ChatActivity : Activity() {
             adapter.submit(emptyList())
             olderOffset = 0
             lastSeenMs = 0
+            // Search state belongs to the previous session's transcript.
+            transcript = emptyList()
+            totalMessages = -1
+            if (searchOpen) closeSearch()
         }
         Notifications.cancelWorking(this)
         loadHistory()
@@ -261,6 +311,195 @@ class ChatActivity : Activity() {
             }
             olderOffset += page.size
             adapter.prependOlder(page, hasMore = page.size >= PAGE)
+        }
+    }
+
+    // ── In-chat search ───────────────────────────────────────────────────────
+
+    private fun openSearch() {
+        if (searchOpen) return
+        searchOpen = true
+        title.visibility = View.GONE
+        searchBar.visibility = View.VISIBLE
+        searchScroll.visibility = View.VISIBLE
+        searchInput.requestFocus()
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.showSoftInput(searchInput, 0)
+        val id = sessionId ?: return
+        if (transcript.isEmpty() && !transcriptLoading) indexTranscript(id)
+    }
+
+    private fun closeSearch() {
+        searchOpen = false
+        searchBar.visibility = View.GONE
+        searchScroll.visibility = View.GONE
+        title.visibility = View.VISIBLE
+        searchInput.setText("")
+        searchMatches.clear()
+        matchIndex = -1
+        hideKeyboard()
+    }
+
+    /** Pulls the whole transcript through the same paged endpoint the feed
+     *  uses. 200 rows are ~0.5 MB; a 1000-message session is a few seconds on
+     *  Wi-Fi, once per screen. */
+    private fun indexTranscript(id: String) {
+        transcriptLoading = true
+        searchCount.visibility = View.VISIBLE
+        searchCount.text = getString(R.string.search_loading_index)
+        scope.launch {
+            val chunks = mutableListOf<ChatMessage>()
+            var offset = 0
+            while (true) {
+                val page = withContext(Dispatchers.IO) { api.messages(id, SEARCH_PAGE, offset) }
+                if (page.isEmpty()) break
+                chunks += page
+                offset += page.size
+                if (page.size < SEARCH_PAGE) break
+            }
+            chunks.reverse() // pages are newest-first; search reads oldest-first
+            transcript = chunks
+            transcriptLoading = false
+            totalMessages = withContext(Dispatchers.IO) { api.messageCount(id) }
+            if (searchOpen) scheduleSearch()
+        }
+    }
+
+    /** Debounced re-filter: 350 ms after the last keystroke. */
+    private fun scheduleSearch() {
+        if (!searchOpen) return
+        searchJob?.cancel()
+        searchJob = scope.launch {
+            delay(350)
+            runSearch()
+        }
+    }
+
+    private fun runSearch() {
+        val q = searchInput.text.toString().trim()
+        searchResults.removeAllViews()
+        searchMatches.clear()
+        matchIndex = -1
+        if (q.isEmpty()) {
+            searchCount.visibility = View.GONE
+            return
+        }
+        val scopeNote = TextView(this).apply {
+            text = getString(
+                R.string.search_scope,
+                if (transcriptLoading) 0 else transcript.size,
+                if (totalMessages > 0) totalMessages else transcript.size
+            )
+            textSize = 11f
+            setTextColor(getColor(R.color.text_secondary))
+        }
+        searchResults.addView(scopeNote)
+        if (transcriptLoading) return
+        val needle = q.lowercase()
+        for (m in transcript) {
+            if (m.compacted) continue
+            val hay = (m.content + "\n" + (m.reasoning ?: "")).lowercase()
+            if (!hay.contains(needle)) continue
+            searchMatches += m
+            if (searchResults.childCount > 30) continue // UI cap; matches stay navigable
+            searchResults.addView(matchRow(m, q))
+        }
+        searchCount.visibility = View.VISIBLE
+        searchCount.text = when {
+            searchMatches.isEmpty() -> getString(R.string.search_no_matches)
+            else -> getString(R.string.search_of, 1, searchMatches.size)
+        }
+        if (searchMatches.isNotEmpty()) {
+            matchIndex = 0
+            jumpTo(searchMatches[0])
+        }
+    }
+
+    /** One compact result line: time · role · fragment with the match bold. */
+    private fun matchRow(m: ChatMessage, q: String): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 10, 0, 10)
+        }
+        val head = TextView(this).apply {
+            text = formatTime(m.timestamp) + " · " + roleLabel(m)
+            textSize = 11f
+            setTextColor(getColor(R.color.text_secondary))
+        }
+        val body = TextView(this).apply {
+            text = highlight(m.content, q)
+            textSize = 13f
+            setTextColor(getColor(R.color.text_primary))
+            maxLines = 3
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        row.addView(head)
+        row.addView(body)
+        row.setOnClickListener { jumpTo(m) }
+        return row
+    }
+
+    private fun highlight(text: String, q: String): CharSequence {
+        val idx = text.lowercase().indexOf(q.lowercase())
+        if (idx < 0 || q.isEmpty()) return text.take(160)
+        val from = (idx - 40).coerceAtLeast(0)
+        val to = (idx + q.length + 120).coerceAtMost(text.length)
+        val span = SpannableString((if (from > 0) "…" else "") + text.substring(from, to))
+        val shift = if (from > 0) 1 else 0
+        span.setSpan(
+            StyleSpan(Typeface.BOLD), idx - from + shift, idx - from + shift + q.length,
+            Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        return span
+    }
+
+    private fun roleLabel(m: ChatMessage): String = when {
+        m.isUser -> getString(R.string.search_role_user)
+        m.isTool -> getString(R.string.search_role_tool)
+        else -> getString(R.string.search_role_assistant)
+    }
+
+    private fun formatTime(ts: Double): String {
+        val ms = (ts * 1000).toLong()
+        if (ms <= 0) return ""
+        return java.text.SimpleDateFormat("d MMM HH:mm", java.util.Locale.getDefault()).format(java.util.Date(ms))
+    }
+
+    private fun stepMatch(dir: Int) {
+        if (searchMatches.isEmpty()) return
+        matchIndex = (matchIndex + dir + searchMatches.size) % searchMatches.size
+        searchCount.text = getString(R.string.search_of, matchIndex + 1, searchMatches.size)
+        jumpTo(searchMatches[matchIndex])
+    }
+
+    /** Scrolls the transcript to a search hit. When the row is not among the
+     *  loaded pages, fetches a window around the nearest preceding user row
+     *  (the around endpoint anchors on prompts) and splices it in via
+     *  prependOlder — the feed's own paging logic is untouched. */
+    private fun jumpTo(m: ChatMessage) {
+        if (m.id < 0) return
+        val pos = adapter.positionOfRowId(m.id)
+        if (pos >= 0) {
+            list.scrollToPosition(pos)
+            ui.postDelayed({ adapter.flashRow(adapter.positionOfRowId(m.id)) }, 200)
+            return
+        }
+        val id = sessionId ?: return
+        scope.launch {
+            // nearest user row at or before the hit, inside the indexed transcript
+            val anchor = transcript.lastOrNull { it.isUser && it.id in 1..m.id }
+                ?: transcript.firstOrNull { it.isUser }
+            if (anchor == null) { withContext(Dispatchers.Main) { list.scrollToPosition(0) }; return@launch }
+            val window = withContext(Dispatchers.IO) { api.messagesAround(id, anchor.id, 60) }
+            if (window.isEmpty()) return@launch
+            withContext(Dispatchers.Main) {
+                olderOffset += adapter.prependOlder(window, hasMore = true)
+                val p = adapter.positionOfRowId(m.id)
+                if (p >= 0) {
+                    list.scrollToPosition(p)
+                    ui.postDelayed({ adapter.flashRow(adapter.positionOfRowId(m.id)) }, 200)
+                }
+            }
         }
     }
 
@@ -954,6 +1193,10 @@ class ChatActivity : Activity() {
         /** Rows per history page. 200 is ~0.5 MB of JSON on a busy session and
          *  still parses in well under a second; older pages load on demand. */
         private const val PAGE = 200
+
+        /** Page size for the search index — same endpoint, slightly smaller
+         *  pages so the first query starts filtering sooner. */
+        private const val SEARCH_PAGE = 100
 
         /** For RequestActionReceiver: answers need the socket this activity's
          *  ApiClient holds. Kept until onDestroy — the shade action typically

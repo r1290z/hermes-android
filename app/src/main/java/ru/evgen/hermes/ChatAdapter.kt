@@ -135,6 +135,9 @@ class ChatAdapter(
 
     private val rows = mutableListOf<Row>()
     private var seq = 0
+    /** The hosting RecyclerView, for findViewHolderForAdapterPosition in the
+     *  search jump highlight. Set once from the activity. */
+    var listRef: RecyclerView? = null
 
     fun submit(messages: List<ChatMessage>) {
         rows.clear()
@@ -144,15 +147,24 @@ class ChatAdapter(
     }
 
     /** Prepend one older page above the transcript. `hasMore` says whether the
-     *  server still has rows before this page. */
-    fun prependOlder(messages: List<ChatMessage>, hasMore: Boolean) {
-        val older = messages.map { toRow(it) }
+     *  server still has rows before this page. Returns how many rows were
+     *  actually new (a spliced window can overlap what is on screen). */
+    fun prependOlder(messages: List<ChatMessage>, hasMore: Boolean): Int {
+        // A search jump can splice a window that overlaps what is already on
+        // screen; rows are keyed by server id, so dedupe keeps one copy.
+        val existing = rows.map { it.key }.toHashSet()
+        val older = messages.map { toRow(it) }.filter { it.key !in existing }
+        if (older.isEmpty()) {
+            setOlder(hasMore)
+            return 0
+        }
         // Index 0 is the "load older" row when it is showing; the page goes
         // right below it so the button stays on top.
         val at = if (rows.firstOrNull() is Row.Older) 1 else 0
         rows.addAll(at, older)
         setOlder(hasMore)
         notifyDataSetChanged()
+        return older.size
     }
 
     /** Shows or hides the "load older" row at the top of the list. */
@@ -178,13 +190,16 @@ class ChatAdapter(
 
     private fun toRow(m: ChatMessage): Row {
         val time = (m.timestamp * 1000).toLong()
+        // Server-numbered rows key on their row id, so a message keeps its
+        // identity across page loads and search jumps can find it again.
+        val key = if (m.id >= 0) "m${m.id}" else null
         return when {
-            m.compacted -> Row.Compacted("c${seq++}", m.content, time = time)
-            m.isUser -> Row.User("u${seq++}", m.content, time = time)
+            m.compacted -> Row.Compacted(key ?: "c${seq++}", m.content, time = time)
+            m.isUser -> Row.User(key ?: "u${seq++}", m.content, time = time)
             m.isTool -> Row.Tool(
-                "t${seq++}", m.toolName ?: "tool", firstLine(m.content), m.content, false, time
+                key ?: "t${seq++}", m.toolName ?: "tool", firstLine(m.content), m.content, false, time
             )
-            else -> Row.Assistant("a${seq++}", m.content, m.reasoning, time = time)
+            else -> Row.Assistant(key ?: "a${seq++}", m.content, m.reasoning, time = time)
         }
     }
 
@@ -231,6 +246,24 @@ class ChatAdapter(
     /** Timestamp of the row at [position], 0 when it has none — the scroll
      *  timeline reads this to show what moment the top of the screen is at. */
     fun timeAt(position: Int): Long = rows.getOrNull(position)?.time ?: 0
+
+    /** Position of a message row by its server row id, -1 when not loaded. */
+    fun positionOfRowId(rowId: Long): Int = rows.indexOfFirst { it.key == "m$rowId" }
+
+    /** Flashes a row's background for 1.5 s — the landing marker after a
+     *  search jump. */
+    fun flashRow(position: Int) {
+        val holder = listRef?.findViewHolderForAdapterPosition(position) ?: return
+        flash(holder.itemView)
+    }
+
+    private fun flash(view: View) {
+        val prev = view.background
+        view.setBackgroundColor(context.getColor(R.color.search_highlight))
+        Handler(Looper.getMainLooper()).postDelayed({
+            view.background = prev
+        }, 1500)
+    }
 
     /** What the user currently sees as the streaming answer ("" when the turn has
      *  not produced a row yet). The history fallback compares against this to tell

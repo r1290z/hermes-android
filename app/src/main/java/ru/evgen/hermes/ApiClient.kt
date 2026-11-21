@@ -491,6 +491,30 @@ class ApiClient private constructor(context: Context) {
         return out
     }
 
+    /** Server row count for the session (`message_count` from the session
+     *  object) — the denominator in "search over N of M messages". */
+    fun messageCount(sessionId: String): Int = runCatching {
+        val raw = get("/api/sessions/$sessionId") ?: return -1
+        JSONObject(raw).optInt("message_count", -1)
+    }.getOrDefault(-1)
+
+    /** Window of messages around a row. The endpoint anchors on a USER row
+     *  ("Prompt not found" for anything else), so callers pass the nearest
+     *  user message at or before the target. `limit` is capped at 120 by the
+     *  server. Returns messages oldest-first. */
+    fun messagesAround(sessionId: String, rowId: Long, limit: Int = 60): List<ChatMessage> {
+        val raw = get("/api/sessions/$sessionId/messages/around?row_id=$rowId&limit=$limit&inline_images=false")
+            ?: return emptyList()
+        val arr = runCatching { JSONObject(raw) }.getOrNull()?.optJSONArray("messages") ?: return emptyList()
+        val out2 = mutableListOf<ChatMessage>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            if (o.optString("display_kind") == "hidden") continue
+            ChatMessage.from(o)?.let(out2::add)
+        }
+        return out2
+    }
+
     // ── Gateway socket ───────────────────────────────────────────────────────
 
     private val main = Handler(Looper.getMainLooper())
@@ -1224,7 +1248,9 @@ data class ChatMessage(
     val reasoning: String?,
     val timestamp: Double,
     /** A compaction summary: rendered as one collapsed line, not the blob. */
-    val compacted: Boolean = false
+    val compacted: Boolean = false,
+    /** Numeric server row id; -1 for rows the server did not number. */
+    val id: Long = -1
 ) {
     val isUser: Boolean get() = role == "user"
     val isTool: Boolean get() = role == "tool"
@@ -1255,7 +1281,8 @@ data class ChatMessage(
                 compacted = compacted,
                 toolName = toolName,
                 reasoning = reasoning,
-                timestamp = json.optDouble("timestamp", 0.0)
+                timestamp = json.optDouble("timestamp", 0.0),
+                id = json.optLong("id", -1L)
             )
         }
     }
