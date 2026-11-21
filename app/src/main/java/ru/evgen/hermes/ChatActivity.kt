@@ -2,6 +2,7 @@ package ru.evgen.hermes
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
 import android.speech.RecognizerIntent
 import android.content.ActivityNotFoundException
@@ -61,6 +62,7 @@ class ChatActivity : Activity() {
     private lateinit var attach: ImageButton
     private lateinit var mic: ImageButton
     private lateinit var modelChip: TextView
+    private lateinit var btnDown: ImageButton
 
     private var sessionId: String? = null
     private var streaming = false
@@ -90,6 +92,9 @@ class ChatActivity : Activity() {
     private var runId: String? = null
     private var streamJob: Job? = null
     private var fallbackJob: Job? = null
+    /** True once the user scrolled AWAY from the bottom while a turn ran —
+     *  the down-button's visibility condition. */
+    private var scrolledUp = false
     /** Set once the answer came from history: late socket deltas would duplicate it. */
     private var fallbackTook = false
     /** Any token arrived for the current turn — the stream is alive, no fallback. */
@@ -166,9 +171,16 @@ class ChatActivity : Activity() {
         adapter.listRef = list
         list.itemAnimator = null
         timeline = findViewById(R.id.timeline)
+        btnDown = findViewById(R.id.btnDown)
+        btnDown.setOnClickListener {
+            scrolledUp = false
+            btnDown.visibility = View.GONE
+            scrollToEnd()
+        }
         list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
                 if (dy != 0) showTimeline(layout.findFirstVisibleItemPosition())
+                updateDownButton()
             }
         })
 
@@ -211,7 +223,34 @@ class ChatActivity : Activity() {
             loadHistory()
             startLive(sessionId!!)
         }
+        restoreDraft()
         updateSendState()
+    }
+
+    // ── Composer draft ────────────────────────────────────────────────────────
+
+    /**
+     * Unsent composer text survives leaving the screen: saved per session in
+     * SharedPreferences on pause/destroy, restored on create. A send clears it.
+     */
+    private fun draftKey(): String = "draft:" + (sessionId ?: "new")
+
+    private fun saveDraft() {
+        if (input.text.isBlank()) {
+            getPreferences(Context.MODE_PRIVATE).edit().remove(draftKey()).apply()
+        } else {
+            getPreferences(Context.MODE_PRIVATE).edit().putString(draftKey(), input.text.toString()).apply()
+        }
+    }
+
+    private fun restoreDraft() {
+        val saved = getPreferences(Context.MODE_PRIVATE).getString(draftKey(), null) ?: return
+        input.setText(saved)
+        input.setSelection(input.text.length)
+    }
+
+    private fun clearDraft() {
+        getPreferences(Context.MODE_PRIVATE).edit().remove(draftKey()).apply()
     }
 
     /**
@@ -229,6 +268,7 @@ class ChatActivity : Activity() {
         val incomingTitle = intent.getStringExtra(EXTRA_SESSION_TITLE)
         if (incoming == null) return
         if (incoming != sessionId) {
+            saveDraft() // the draft belongs to the session it was typed in
             sessionId = incoming
             title.text = incomingTitle ?: getString(R.string.new_session)
             adapter.submit(emptyList())
@@ -693,6 +733,7 @@ class ChatActivity : Activity() {
         if (streaming) return
         if (text.isEmpty() && pendingImage == null && pendingFile == null) return
         input.setText("")
+        clearDraft()
         hideKeyboard()
 
         val image = pendingImage
@@ -737,6 +778,7 @@ class ChatActivity : Activity() {
         val text = input.text.toString().trim()
         if (text.isEmpty()) return
         input.setText("")
+        clearDraft()
         if (!steerHintShown) {
             steerHintShown = true
             Toast.makeText(this, R.string.steer_hint_toast, Toast.LENGTH_SHORT).show()
@@ -895,6 +937,8 @@ class ChatActivity : Activity() {
         if (adapter.itemCount > before) adapter.notifyItemInserted(index)
         pendingIndex = index
         scheduleRefresh()
+        // New tokens below the fold are what the down-button exists for.
+        if (scrolledUp) updateDownButton()
         // In the shade, the answer should be readable while it is being written,
         // not just announced when it is done.
         if (!resumed && System.currentTimeMillis() - lastNotifyMs > 4000) {
@@ -1201,6 +1245,23 @@ class ChatActivity : Activity() {
         }
     }
 
+    /** Down-button: shown while the last visible row is not the transcript's
+     *  end; accent tint marks "new content below" while a turn is streaming. */
+    private fun updateDownButton() {
+        val layout = list.layoutManager as? LinearLayoutManager ?: return
+        val last = layout.findLastVisibleItemPosition()
+        val atBottom = last < 0 || last >= adapter.itemCount - 2
+        scrolledUp = !atBottom
+        if (scrolledUp) {
+            btnDown.visibility = View.VISIBLE
+            btnDown.setColorFilter(getColor(if (streaming) R.color.accent else R.color.text_secondary))
+            btnDown.contentDescription =
+                getString(if (streaming) R.string.new_messages else R.string.scroll_down)
+        } else {
+            btnDown.visibility = View.GONE
+        }
+    }
+
     private fun hideKeyboard() {
         val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(input.windowToken, 0)
@@ -1297,6 +1358,7 @@ class ChatActivity : Activity() {
     override fun onPause() {
         super.onPause()
         resumed = false
+        saveDraft()
         if (streaming) {
             Notifications.showWorking(
                 this, sessionId, title.text.toString(), getString(R.string.waiting)
@@ -1305,6 +1367,7 @@ class ChatActivity : Activity() {
     }
 
     override fun onDestroy() {
+        saveDraft()
         streamJob?.cancel()
         fallbackJob?.cancel()
         liveJob?.cancel()

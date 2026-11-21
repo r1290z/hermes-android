@@ -244,6 +244,12 @@ class ApiClient private constructor(context: Context) {
     fun setArchived(id: String, archived: Boolean): Boolean =
         mutate("PATCH", id, JSONObject().put("archived", archived).toString())
 
+    /** Clears the sidebar dot. There is no POST /{id}/read on this gateway
+     *  (405 on every method); the fenced session PATCH with `unread:false`
+     *  is the supported write (verified: 200, operation "sidebar"). */
+    fun markRead(id: String): Boolean =
+        mutate("PATCH", id, JSONObject().put("unread", false).toString())
+
     fun deleteSession(id: String): Boolean = mutate("DELETE", id, null)
 
     /** Writes are fenced: the server refuses a mutation without the counters it

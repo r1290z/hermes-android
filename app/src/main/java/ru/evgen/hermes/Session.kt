@@ -15,6 +15,11 @@ data class Session(
     val messageCount: Int,
     val model: String,
     val source: String,
+    /** The sidebar dot: the server tracks it per session; the app clears it
+     *  with the same fenced PATCH every other session edit uses. `var` only
+     *  for the optimistic clear on tap — a failed PATCH is corrected by the
+     *  next listing. */
+    var unread: Boolean = false,
     /** Prompt tokens the last turn carried — what the status strip shows as
      *  "context used". Absent on a session that never ran a turn. */
     val inputTokens: Long = 0
@@ -56,6 +61,7 @@ data class Session(
                 messageCount = json.optInt("message_count", 0),
                 model = json.optString("model").substringAfter('/'),
                 source = json.optString("source"),
+                unread = json.optBoolean("unread", false),
                 inputTokens = json.optLong("input_tokens", 0L)
             )
         }

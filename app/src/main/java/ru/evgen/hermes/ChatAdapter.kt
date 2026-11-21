@@ -1,8 +1,10 @@
 package ru.evgen.hermes
 
+import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Handler
@@ -475,6 +477,12 @@ class ChatAdapter(
         private val time: TextView = view.findViewById(R.id.time)
 
         fun bind(row: Row.Assistant) {
+            // Long-press → copy/share the WHOLE answer; the code-card copy
+            // only covers one block.
+            itemView.setOnLongClickListener {
+                showAnswerMenu(row.text)
+                true
+            }
             blocks.removeAllViews()
             time.text = when {
                 row.time <= 0 -> ""
@@ -555,6 +563,37 @@ class ChatAdapter(
                     }
                 }
             }
+        }
+
+        /** Long-press menu: the whole answer to the clipboard or the system
+         *  share sheet — the code-card copy button covers only one block. */
+        private fun showAnswerMenu(text: String) {
+            if (text.isBlank()) return
+            val options = arrayOf(
+                context.getString(R.string.copy_all),
+                context.getString(R.string.share)
+            )
+            AlertDialog.Builder(context)
+                .setItems(options) { _, which ->
+                    when (which) {
+                        0 -> {
+                            val clipboard =
+                                context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("answer", text))
+                            Toast.makeText(context, R.string.copied, Toast.LENGTH_SHORT).show()
+                        }
+                        1 -> {
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, text)
+                            }
+                            runCatching {
+                                context.startActivity(Intent.createChooser(send, null))
+                            }
+                        }
+                    }
+                }
+                .show()
         }
 
         private fun codeCard(inflater: LayoutInflater, part: Markdown.Block.Code): View {

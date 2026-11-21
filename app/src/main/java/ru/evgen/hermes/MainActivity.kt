@@ -167,6 +167,12 @@ class MainActivity : Activity() {
         session?.let {
             intent.putExtra(ChatActivity.EXTRA_SESSION_ID, it.id)
             intent.putExtra(ChatActivity.EXTRA_SESSION_TITLE, it.title)
+            if (it.unread) {
+                // Optimistic clear: the dot must not survive the tap; if the
+                // fenced PATCH fails the next listing puts it back.
+                it.unread = false
+                scope.launch { withContext(Dispatchers.IO) { api.markRead(it.id) } }
+            }
         }
         startActivity(intent)
     }

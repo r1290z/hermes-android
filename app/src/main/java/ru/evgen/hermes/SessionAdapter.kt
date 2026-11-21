@@ -98,12 +98,14 @@ class SessionAdapter(
         private val meta: TextView = view.findViewById(R.id.meta)
         private val time: TextView = view.findViewById(R.id.time)
         private val pin: TextView = view.findViewById(R.id.pin)
+        private val unreadDot: View = view.findViewById(R.id.unreadDot)
 
         fun bind(session: Session) {
             title.text = session.title
             meta.text = metaLine(session)
             time.text = relative(session.lastActive)
             pin.visibility = if (session.pinned) View.VISIBLE else View.GONE
+            unreadDot.visibility = if (session.unread) View.VISIBLE else View.GONE
             itemView.setOnClickListener { onOpen(session) }
             itemView.setOnLongClickListener { v ->
                 onLongPress(session, v)
