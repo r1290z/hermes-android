@@ -55,11 +55,9 @@ class ArchiveActivity : Activity() {
     private fun load() {
         scope.launch {
             val sessions = withContext(Dispatchers.IO) { api.archivedSessions(this@ArchiveActivity) }
-            // Prune registry entries the server no longer has (deleted upstream).
-            val live = sessions.map { it.id }.toSet()
-            ArchiveStore.ids(this@ArchiveActivity).filter { it !in live }.forEach {
-                ArchiveStore.remove(this@ArchiveActivity, it)
-            }
+            // Pruning of registry entries happens inside archivedSessions(),
+            // strictly on 404/410 — a network failure must never wipe the
+            // registry (an offline open of this screen keeps every id).
             status.visibility = if (sessions.isEmpty()) View.VISIBLE else View.GONE
             status.text = getString(R.string.archive_empty)
             adapter.submit(sessions)

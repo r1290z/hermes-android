@@ -139,14 +139,20 @@ class ApiClient(private val context: Context) {
         return out
     }
 
-    /** The server has no listing that returns archived rows (every surface
-     *  pins `archived = 0` in SQL; REST `include_hidden` only works with a
-     *  `title` lookup), so the archive is the local registry (ArchiveStore)
-     *  plus per-row `GET /api/sessions/{id}` — that endpoint still answers
-     *  for an archived row. Rows gone from the server (404) are pruned. */
+    /** Archived rows come from the server listing: REST takes
+     *  `?archived=only` (hermes_cli/web_routers/sessions.py), which also
+     *  returns pinned rows — hence the client-side `archived` filter. The
+     *  local registry (ArchiveStore) only supplements it for rows archived
+     *  from this phone that the limit window may cut off; ids the server no
+     *  longer has (404/410) are pruned, a network failure is NOT a prune. */
     fun archivedSessions(context: android.content.Context): List<Session> {
-        val out = mutableListOf<Session>()
+        val out = sessionsFrom(
+            get("/api/sessions?archived=only&limit=100"),
+            includeArchived = true
+        ).filter { it.archived }.toMutableList()
+        val listed = out.map { it.id }.toHashSet()
         for (id in ArchiveStore.ids(context)) {
+            if (id in listed) continue
             val (code, json) = sessionRowStatus(id)
             if (code == 404 || code == 410) {
                 ArchiveStore.remove(context, id)  // deleted upstream

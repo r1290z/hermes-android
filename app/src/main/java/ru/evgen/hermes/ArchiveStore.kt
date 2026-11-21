@@ -5,16 +5,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Local archive registry.
+ * Local archive registry — a SUPPLEMENT, not the source of truth.
  *
- * The server has NO surface that lists archived sessions: every listing
- * (REST `/api/sessions`, WS `session.list`) pins `archived = 0` in SQL —
- * `include_hidden` in REST only works together with a `title` lookup
- * (api_server.py `_handle_list_sessions`), and the WS live scope drops
- * closed/archived rows. But `GET /api/sessions/{id}` still answers for an
- * archived row (with `archived: true`), and `PATCH {"archived": false}`
- * brings it back. So the app remembers archived ids itself and re-fetches
- * each row on demand; a deleted session (404) drops out of the registry.
+ * The server listing is `GET /api/sessions?archived=only` (plus pinned rows,
+ * which the caller filters out client-side). The registry only catches rows
+ * archived from this phone that the server's `limit` window may cut off, so
+ * a fresh install still sees the full archive from the server alone.
+ * Registry ids the server no longer has (404/410 on `GET /api/sessions/{id}`)
+ * are dropped; a network failure never removes an id.
  */
 object ArchiveStore {
 
