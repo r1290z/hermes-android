@@ -529,10 +529,6 @@ class ApiClient private constructor(context: Context) {
     /** Last RPC error text, for the caller's toast. */
     @Volatile var error: String? = null
 
-    /** A JSON string field, with a JSON null read as "" instead of the literal "null". */
-    private fun str(o: JSONObject, key: String): String =
-        if (o.isNull(key)) "" else o.optString(key)
-
     private fun handleEvent(params: JSONObject) {
         val type = params.optString("type")
         val sid = params.optString("session_id")
@@ -551,7 +547,7 @@ class ApiClient private constructor(context: Context) {
         // asks with, and the live id the gateway answers `session.resume` with.
         // Filtering on a single value dropped every event whenever those differed,
         // which on screen is "the answer never arrives until you reload".
-        if (bound.isNotEmpty() && sid.isNotEmpty() && sid !in bound) {
+        if (!EventParser.belongsToSession(params, bound)) {
             if (!droppedLogged) {
                 droppedLogged = true
                 Diag.log("event", "чужой сеанс ${sid.take(14)}… (жду ${bound.joinToString { it.take(14) }})")
@@ -590,40 +586,16 @@ class ApiClient private constructor(context: Context) {
             return
         }
         val payload = params.optJSONObject("payload") ?: JSONObject()
-        // `org.json`'s optString turns a JSON null into the literal "null", and the
-        // gateway sends `text: null` in message.complete. Reading it naively put the
-        // word "null" on screen where the answer should be — which is exactly what
-        // the user saw ("ответ исчезает и остаётся null"). Every payload read goes
-        // through `str()` so a null can never become text.
-        val event = when (type) {
-            "message.delta" -> str(payload, "text").takeIf { it.isNotEmpty() }?.let { text ->
-                if (!sawDelta) {
-                    sawDelta = true
-                    Diag.log("event", "первый message.delta")
-                }
-                ChatEvent.Delta(text)
-            }
-            "thinking.delta" -> str(payload, "text").takeIf { it.isNotEmpty() }?.let(ChatEvent::Reasoning)
-            "tool.start" -> ChatEvent.ToolStarted(
-                str(payload, "name"),
-                str(payload, "context"),
-                payload.optJSONObject("args")?.toString().orEmpty()
-            )
-            "tool.complete" -> ChatEvent.ToolFinished(
-                str(payload, "name"),
-                str(payload, "context"),
-                payload.optBoolean("is_error")
-            )
-            "agent.print" -> str(payload, "text").takeIf { it.isNotBlank() }
-                ?.let { ChatEvent.Commentary(it) }
-            "status.update" -> str(payload, "text").takeIf { it.isNotBlank() }
-                ?.let { ChatEvent.Commentary(it) }
-            "message.complete" -> {
-                Diag.log("event", "message.complete")
-                ChatEvent.Completed(str(payload, "text"))
-            }
-            else -> null
+        // Pure parse lives in EventParser (unit-tested on the JVM): `org.json`'s
+        // optString turns a JSON null into the literal "null", and the gateway
+        // sends `text: null` in message.complete. Reading it naively put the
+        // word "null" on screen where the answer should be.
+        val event = EventParser.parseEvent(type, payload)
+        if (event is ChatEvent.Delta && !sawDelta) {
+            sawDelta = true
+            Diag.log("event", "первый message.delta")
         }
+        if (type == "message.complete") Diag.log("event", "message.complete")
         event?.let { e ->
             val target = sink ?: return
             main.post { target(e) }

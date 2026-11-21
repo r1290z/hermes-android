@@ -84,4 +84,14 @@ dependencies {
     // The `provider` artifact registers the binder bridge the manifest declares.
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
+
+    // JVM unit tests (app/src/test): the protocol parse and transcript merge
+    // are pure logic and must be checkable without a device. org.json ships as
+    // stripped stubs in android.jar, so a real implementation is needed for tests.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+    // ChatAdapter is an Android RecyclerView.Adapter; its notify* calls need a
+    // real Android runtime, so JVM tests run under Robolectric.
+    testImplementation("org.robolectric:robolectric:4.11.1")
+    testImplementation("androidx.test:core:1.5.0")
 }
