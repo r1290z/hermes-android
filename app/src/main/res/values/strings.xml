@@ -74,4 +74,26 @@
 
     <!-- Compaction -->
     <string name="compacted_summary">Свёрнуто: предыдущие сообщения сжаты в сводку</string>
+
+    <!-- Kanban board -->
+    <string name="kanban_board">Доска</string>
+    <string name="kanban_need_token">Доска живёт на kanban.example.com и защищена токеном. Введи его один раз — он останется только на этом телефоне.</string>
+    <string name="kanban_enter_token">Ввести токен</string>
+    <string name="kanban_token_title">Токен доски</string>
+    <string name="kanban_token_message">32-символьный токен из ~/.hermes/kanban-webui.env на сервере</string>
+    <string name="kanban_token_hint">Токен доски</string>
+    <string name="kanban_check">Проверить</string>
+    <string name="kanban_token_ok">Токен принят</string>
+    <string name="kanban_token_bad">Токен не принят — проверь и попробуй ещё раз</string>
+    <string name="kanban_loading">Загружаем доску…</string>
+    <string name="kanban_error">Ошибка: %1$s</string>
+    <string name="kanban_empty_column">Нет карточек в этой колонке</string>
+    <string name="kanban_comments">Комментарии</string>
+    <string name="kanban_no_comments">Комментариев пока нет</string>
+    <string name="kanban_comment_hint">Комментарий</string>
+    <string name="kanban_runs">Прогоны</string>
+    <string name="kanban_runs_hide">Скрыть прогоны</string>
+    <string name="kanban_complete">Завершить</string>
+    <string name="kanban_block">Заблокировать</string>
+    <string name="kanban_unblock">Разблокировать</string>
 </resources>

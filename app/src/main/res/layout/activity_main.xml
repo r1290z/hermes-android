@@ -37,6 +37,14 @@
                     android:textSize="20sp" />
 
                 <ImageButton
+                    android:id="@+id/btnKanban"
+                    android:layout_width="44dp"
+                    android:layout_height="44dp"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/kanban_board"
+                    android:src="@drawable/ic_kanban" />
+
+                <ImageButton
                     android:id="@+id/btnRefresh"
                     android:layout_width="44dp"
                     android:layout_height="44dp"

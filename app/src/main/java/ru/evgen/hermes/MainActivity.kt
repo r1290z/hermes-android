@@ -71,6 +71,9 @@ class MainActivity : Activity() {
         attachSwipes()
 
         findViewById<View>(R.id.newSession).setOnClickListener { openChat(null) }
+        findViewById<View>(R.id.btnKanban).setOnClickListener {
+            startActivity(Intent(this, ru.evgen.hermes.kanban.KanbanBoardActivity::class.java))
+        }
         findViewById<ImageButton>(R.id.btnRefresh).apply {
             setOnClickListener { load(force = true) }
             setOnLongClickListener {
