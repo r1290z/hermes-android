@@ -55,7 +55,7 @@
     <string name="logging_in">Входим…</string>
     <string name="waiting">Агент работает…</string>
     <string name="empty_chat">Сообщений пока нет</string>
-    <string name="chat_pick_session">Выбери сеанс в списке</string>
+    <string name="chat_pick_session">Напиши первое сообщение — сеанс создастся сам</string>
     <string name="reload">Обновить</string>
     <string name="logout">Выйти</string>
     <string name="more">Ещё</string>

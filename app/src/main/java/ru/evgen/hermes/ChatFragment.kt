@@ -371,6 +371,55 @@ class ChatFragment : Fragment() {
     }
 
     /**
+     * «Новый сеанс»: empty the page without creating anything server-side.
+     *
+     * A session is only born when the first message is sent (see submit →
+     * createSession), so "new" is a state of this page, not an API call. The bug
+     * this fixes: the button used to call showChat(null, null), which only paged
+     * to the chat and left the previously open session in place — the composer
+     * kept writing into the old chat.
+     */
+    fun startNewSession() {
+        val previous = sessionId
+        saveDraft()  // the draft belongs to the session it was typed in
+        liveJob?.cancel()
+        liveJob = null
+        // A turn still streaming belongs to the session we are leaving. Cancel the
+        // listener and free the composer: the run itself continues on the server,
+        // and its answer lands in the old session (where the list shows it as
+        // unread). Leaving `streaming` true would block typing into the new chat.
+        if (streaming) {
+            streamJob?.cancel()
+            streaming = false
+            updateSendState()
+        }
+        // Stop receiving the old session's events: they would otherwise land in
+        // the empty transcript of a chat that has no session yet. The socket
+        // itself stays up, so a turn started earlier still completes and notifies.
+        api.detach()
+        sessionId = null
+        title.text = getString(R.string.new_session)
+        adapter.submit(emptyList())
+        adapter.setOlder(false)
+        olderOffset = 0
+        lastSeenMs = 0
+        lastFinalText = ""
+        transcript = emptyList()
+        totalMessages = -1
+        if (searchOpen) closeSearch()
+        status.visibility = View.GONE
+        restoreDraft()  // a fresh session still has its own saved draft
+        renderEmptyState()
+        // The user tapped "new" to type, so put the cursor where they will type.
+        input.requestFocus()
+        input.post {
+            val imm = context?.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+        }
+        if (previous != null) Diag.log("chat", "новый сеанс (был ${previous.take(12)}…)")
+    }
+
+    /**
      * Makes an opened chat live.
      *
      * Two layers, because one is not enough: [ApiClient.attach] subscribes to the

@@ -104,6 +104,10 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
                         putString(ChatFragment.EXTRA_SESSION_ID, id)
                         pendingSessionTitle?.let { putString(ChatFragment.EXTRA_SESSION_TITLE, it) }
                     }
+                    // Consumed. Leaving it set meant a fragment recreated later
+                    // opened a stale session — including after «Новый сеанс».
+                    pendingSessionId = null
+                    pendingSessionTitle = null
                 }
             }
         }
@@ -113,9 +117,19 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
      *  switches its session in place, without recreating the fragment. */
     private fun showChat(id: String?, title: String?) {
         val chat = chatFragment()
-        if (chat != null) {
-            if (id != null) chat.openSession(id, title)
-        } else if (id != null) {
+        if (id == null) {
+            // «Новый сеанс»: nothing to open — the page has to be cleared. Without
+            // this branch the button only paged over to the chat, which still had
+            // the previous session in it, and the composer wrote into that one.
+            // The pending handoff must go too, or a chat fragment created later
+            // (page not built yet, or recreated) would resurrect the old session
+            // from it and the button would look broken again.
+            pendingSessionId = null
+            pendingSessionTitle = null
+            chat?.startNewSession()
+        } else if (chat != null) {
+            chat.openSession(id, title)
+        } else {
             // Not created yet (first tap right after launch): hand the session
             // over as launch arguments; createFragment's copy picks them up.
             pendingSessionId = id
