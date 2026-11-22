@@ -1361,6 +1361,10 @@ class ChatActivity : Activity() {
         // The list owns the message count; this just says "this one was on
         // screen", so the next listing can mark it read.
         sessionId?.let { ReadMarks.noteOpened(this, it) }
+        // Opening a chat that is not streaming anything means the turn this phone
+        // started is over: drop the local "running" entry, or the row in the list
+        // keeps pulsing after the answer has been read.
+        if (!streaming) sessionId?.let { Running.finished(this, it) }
         // Requests answered from the shade while the process was alive but the
         // screen closed: their cards are stale, resolve them quietly.
         for ((requestId, choice) in pendingAnswered) {

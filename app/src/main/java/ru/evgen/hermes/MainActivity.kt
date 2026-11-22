@@ -195,10 +195,29 @@ class MainActivity : Activity() {
                 val fresh = withContext(Dispatchers.IO) { api.sessions(limit = 20, order = "recent") }
                 if (fresh.isEmpty()) continue
                 val byId = fresh.associateBy { it.id }
+                // Reconcile the local registry against the server. The local entry
+                // exists to make the pulse appear instantly on this phone's own
+                // turns — it must not outlive the turn. It used to: if the chat
+                // screen was closed mid-turn, `Done` never arrived, the entry sat
+                // there for its whole TTL and the row kept pulsing long after the
+                // answer was read. A server row that says "not running" for 20 s
+                // is the authority; the grace period covers the moment right after
+                // submit, when the server has not stamped anything yet.
+                val now = System.currentTimeMillis()
+                for (id in localRunning) {
+                    val row = byId[id] ?: continue
+                    val localAge = now - (Running.since(this@MainActivity, id) ?: now)
+                    if (!row.running && localAge > 20_000) Running.finished(this@MainActivity, id)
+                }
+                val stillLocal = Running.active(this@MainActivity)
                 var changed = false
                 for (s in all) {
                     val f = byId[s.id]
-                    val runningNow = (f?.running ?: s.running) || localRunning.contains(s.id)
+                    // A row outside the fetched page (or absent from it) is not
+                    // running unless this phone started it — "sticky true" was how
+                    // a finished turn could pulse forever.
+                    val runningNow = if (f != null) (f.running || stillLocal.contains(s.id))
+                    else stillLocal.contains(s.id)
                     if (f != null && f.messageCount != s.messageCount) {
                         s.messageCount = f.messageCount
                         // New messages arrived while the list was open: recompute

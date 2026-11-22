@@ -19,7 +19,7 @@ object Running {
     private const val PREFS = "hermes_running"
     private const val KEY = "since:"
     /** Longer than any realistic answer; a stale entry past this is a lie. */
-    private const val TTL_MS = 20 * 60 * 1000L
+    private const val TTL_MS = 5 * 60 * 1000L
 
     fun started(context: Context, sessionId: String) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
@@ -29,6 +29,13 @@ object Running {
     fun finished(context: Context, sessionId: String) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .remove(KEY + sessionId).apply()
+    }
+
+    /** When this phone started the turn, or null if it did not. */
+    fun since(context: Context, sessionId: String): Long? {
+        val at = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getLong(KEY + sessionId, -1L)
+        return if (at > 0) at else null
     }
 
     /** Ids still believed to be running, with expired entries dropped as we go. */
