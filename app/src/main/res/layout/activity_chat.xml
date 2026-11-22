@@ -99,10 +99,11 @@
         android:layout_height="1dp"
         android:background="@color/divider" />
 
-    <!-- Search results: a compact list under the header, above the transcript. -->
-    <include
-        android:id="@+id/searchResults"
-        layout="@layout/search_results" />
+    <!-- Search results: a compact list under the header, above the transcript.
+         No android:id here: giving the <include> an id REPLACES the root view's
+         own id, so @+id/searchScroll disappeared and @+id/searchResults pointed
+         at a ScrollView that the code casts to LinearLayout. -->
+    <include layout="@layout/search_results" />
 
     <FrameLayout
         android:layout_width="match_parent"

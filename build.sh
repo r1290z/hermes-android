@@ -27,6 +27,10 @@ BUILD_TOOLS=/opt/android-sdk/build-tools/36.0.0
 
 # Sources only, and NO --delete: the remote tree also holds the signing key and
 # gradle caches that a sync from here must never remove.
+# Layout id check first: a missing id or a wrong view class compiles clean and
+# crashes the screen at runtime (6.1 shipped exactly that, ClassCastException on
+# every chat open). Cheaper to catch here than on the phone.
+python3 "$HERE/scripts/check_layout_ids.py"
 rsync -az \
   --exclude build --exclude .gradle --exclude local.properties \
   --exclude '*.apk' --exclude .git \
