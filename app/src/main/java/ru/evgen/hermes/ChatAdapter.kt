@@ -725,7 +725,7 @@ class ChatAdapter(
         }
     }
 
-    /** Set by ChatActivity. Clarify: (qid, answer|null); approval: (null,
+    /** Set by ChatFragment. Clarify: (qid, answer|null); approval: (null,
      *  choice); cancel the whole clarify batch: (null, null). */
     var answerHandler: ((String, String?, String?) -> Unit)? = null
 

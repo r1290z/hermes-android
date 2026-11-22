@@ -27,7 +27,7 @@ import kotlinx.coroutines.withContext
  * FragmentActivity is required to host androidx fragments; the manifest keeps
  * singleTask, because notifications tap into this activity.
  */
-class MainActivity : FragmentActivity(), SessionsFragment.Host {
+class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Host {
 
     private lateinit var api: ApiClient
     private lateinit var pager: ViewPager2
@@ -59,7 +59,25 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host {
         Notifications.ensureChannels(this)
         askNotificationPermission()
 
+        // A notification tap: open the session it is about on the chat page.
+        openFromIntent(intent)
+
         checkForUpdates(manual = false)
+    }
+
+    /**
+     * Notification taps arrive here both on create and via [onNewIntent]
+     * (singleTask). Without an id this does nothing — the pager opens on page 0.
+     */
+    private fun openFromIntent(intent: Intent?) {
+        val id = intent?.getStringExtra(EXTRA_SESSION_ID) ?: return
+        val title = intent.getStringExtra(ChatFragment.EXTRA_SESSION_TITLE)
+        showChat(id, title)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        openFromIntent(intent)
     }
 
     override fun onRefreshLongPress() {
@@ -72,15 +90,54 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host {
 
     // ── Swipe shell ───────────────────────────────────────────────────────────
 
-    /** Pages: 0 = projects, 1 = sessions. The chat joins as page 2 in the next
-     *  card — the dot strip already reserves its place. */
+    /** Pages: 0 = projects, 1 = sessions, 2 = chat. */
     private inner class PageAdapter : FragmentStateAdapter(this@MainActivity) {
-        override fun getItemCount() = 2
+        override fun getItemCount() = 3
         override fun createFragment(position: Int): Fragment = when (position) {
             0 -> ProjectsFragment()
-            else -> SessionsFragment()
+            1 -> SessionsFragment()
+            else -> ChatFragment().apply {
+                // A notification may have named a session before page 2 was
+                // ever created; launch arguments are how the fragment reads it.
+                pendingSessionId?.let { id ->
+                    arguments = android.os.Bundle().apply {
+                        putString(ChatFragment.EXTRA_SESSION_ID, id)
+                        pendingSessionTitle?.let { putString(ChatFragment.EXTRA_SESSION_TITLE, it) }
+                    }
+                }
+            }
         }
     }
+
+    /** A session row tapped on page 1 (or a notification tap): the chat page
+     *  switches its session in place, without recreating the fragment. */
+    private fun showChat(id: String?, title: String?) {
+        val chat = chatFragment()
+        if (chat != null) {
+            if (id != null) chat.openSession(id, title)
+        } else if (id != null) {
+            // Not created yet (first tap right after launch): hand the session
+            // over as launch arguments; createFragment's copy picks them up.
+            pendingSessionId = id
+            pendingSessionTitle = title
+        }
+        pager.currentItem = 2
+    }
+
+    override fun onOpenChat(id: String?, title: String?) = showChat(id, title)
+
+    /** The chat's back button: to the sessions page, not out of the app. */
+    override fun onChatBack() {
+        pager.currentItem = 1
+    }
+
+    /** The session the chat should open with when its fragment is created —
+     *  set when a notification arrives before page 2 was ever shown. */
+    private var pendingSessionId: String? = null
+    private var pendingSessionTitle: String? = null
+
+    private fun chatFragment(): ChatFragment? =
+        supportFragmentManager.fragments.filterIsInstance<ChatFragment>().firstOrNull()
 
     /** Called from page 0: pick the project filter and show the sessions. */
     fun openProject(project: Project?) {

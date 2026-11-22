@@ -2,12 +2,13 @@ package ru.evgen.hermes
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.speech.RecognizerIntent
-import android.content.ActivityNotFoundException
 import android.net.Uri
 import android.os.Bundle
+import androidx.activity.result.contract.ActivityResultContracts
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
@@ -18,6 +19,7 @@ import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.TextView
 import android.widget.Toast
+import androidx.fragment.app.Fragment
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.CoroutineScope
@@ -48,7 +50,13 @@ import android.widget.ScrollView
  * (re-parsing markdown 40 times a second stutters), and the finished turn is
  * re-rendered into blocks with code cards and lists.
  */
-class ChatActivity : Activity() {
+class ChatFragment : Fragment() {
+
+    /** What the fragment needs from its host: the back button goes to the
+     *  sessions page instead of finish()ing anything. */
+    interface Host {
+        fun onChatBack()
+    }
 
     private lateinit var api: ApiClient
     private lateinit var list: RecyclerView
@@ -140,38 +148,106 @@ class ChatActivity : Activity() {
      *  lifecycleScope to hand. Cancelled in onDestroy. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_chat)
+    /** Set in onAttach, cleared in onDetach: a fragment has no findViewById
+     *  of its own, so views are bound lazily through the activity. */
+    private var act: MainActivity? = null
 
-        api = ApiClient.get(this)
-        list = findViewById(R.id.messages)
-        input = findViewById(R.id.input)
-        send = findViewById(R.id.btnSend)
-        steer = findViewById(R.id.btnSteer)
-        attach = findViewById(R.id.btnAttach)
-        mic = findViewById(R.id.btnMic)
-        title = findViewById(R.id.title)
-        status = findViewById(R.id.status)
-        modelChip = findViewById(R.id.btnModel)
+    /** The result launchers must be registered before onCreate finishes;
+     *  the codes match the old REQ_* constants one for one. */
+    private val pickImageLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result -> onPickerResult(REQ_PICK_IMAGE, result.resultCode, result.data) }
+
+    private val pickFileLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result -> onPickerResult(REQ_PICK_FILE, result.resultCode, result.data) }
+
+    private val speechLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result -> onPickerResult(REQ_SPEECH, result.resultCode, result.data) }
+
+    @Suppress("DEPRECATION")
+    private fun onPickerResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (resultCode != Activity.RESULT_OK) return
+        when (requestCode) {
+            REQ_PICK_IMAGE -> {
+                val uri = data?.data ?: return
+                scope.launch {
+                    val decoded = withContext(Dispatchers.IO) { decodeImage(uri) }
+                    if (decoded == null) {
+                        ui.post { Toast.makeText(context, R.string.image_too_big, Toast.LENGTH_LONG).show() }
+                        return@launch
+                    }
+                    pendingImage = decoded
+                    ui.post {
+                        showPendingImage()
+                        updateSendState()
+                    }
+                }
+            }
+            REQ_PICK_FILE -> {
+                val uri = data?.data ?: return
+                scope.launch {
+                    val picked = withContext(Dispatchers.IO) { readFile(uri) }
+                    if (picked == null) {
+                        ui.post { Toast.makeText(context, R.string.file_too_big, Toast.LENGTH_LONG).show() }
+                        return@launch
+                    }
+                    // Name and size up front — never send a file sight-unseen.
+                    ui.post { confirmFile(picked) }
+                }
+            }
+            REQ_SPEECH -> {
+                val text = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                    ?.firstOrNull { it.isNotBlank() } ?: return
+                input.append((if (input.text.isNotEmpty() && !input.text.last().isWhitespace()) " " else "") + text)
+                input.setSelection(input.text.length)
+                input.requestFocus()
+            }
+        }
+    }
+
+    override fun onAttach(context: Context) {
+        super.onAttach(context)
+        act = context as? MainActivity
+        api = ApiClient.get(context)
+    }
+
+    override fun onCreateView(
+        inflater: android.view.LayoutInflater,
+        container: android.view.ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View = inflater.inflate(R.layout.fragment_chat, container, false)
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        list = view.findViewById(R.id.messages)
+        input = view.findViewById(R.id.input)
+        send = view.findViewById(R.id.btnSend)
+        steer = view.findViewById(R.id.btnSteer)
+        attach = view.findViewById(R.id.btnAttach)
+        mic = view.findViewById(R.id.btnMic)
+        title = view.findViewById(R.id.title)
+        status = view.findViewById(R.id.status)
+        modelChip = view.findViewById(R.id.btnModel)
         modelChip.setOnClickListener { showModelPicker() }
         // The default model name until /api/model/info answers; picked lazily
         // so an offline phone still opens the chat instantly.
         scope.launch {
             val info = withContext(Dispatchers.IO) { api.modelInfo() }
             val name = info?.optString("model")?.ifEmpty { null }
-            if (name != null && currentModel == null) runOnUiThread { setModelChip(name) }
+            if (name != null && currentModel == null) ui.post { setModelChip(name) }
         }
 
-        adapter = ChatAdapter(this, { url -> openLink(url) }, { loadOlder() })
+        adapter = ChatAdapter(requireContext(), { url -> openLink(url) }, { loadOlder() })
         adapter.answerHandler = { requestId, a, b -> onAnswer(requestId, a, b) }
-        val layout = LinearLayoutManager(this).apply { stackFromEnd = true }
+        val layout = LinearLayoutManager(requireContext()).apply { stackFromEnd = true }
         list.layoutManager = layout
         list.adapter = adapter
         adapter.listRef = list
         list.itemAnimator = null
-        timeline = findViewById(R.id.timeline)
-        btnDown = findViewById(R.id.btnDown)
+        timeline = view.findViewById(R.id.timeline)
+        btnDown = view.findViewById(R.id.btnDown)
         btnDown.setOnClickListener {
             scrolledUp = false
             btnDown.visibility = View.GONE
@@ -184,25 +260,25 @@ class ChatActivity : Activity() {
             }
         })
 
-        api.onRequest = { request -> runOnUiThread { onRequestArrived(request) } }
-        api.onRequestCancel = { requestId -> runOnUiThread { onRequestCancelled(requestId) } }
+        api.onRequest = { request -> ui.post { onRequestArrived(request) } }
+        api.onRequestCancel = { requestId -> ui.post { onRequestCancelled(requestId) } }
 
-        sessionId = intent.getStringExtra(EXTRA_SESSION_ID)
-        title.text = intent.getStringExtra(EXTRA_SESSION_TITLE) ?: getString(R.string.new_session)
+        sessionId = arguments?.getString(EXTRA_SESSION_ID)
+        title.text = arguments?.getString(EXTRA_SESSION_TITLE) ?: getString(R.string.new_session)
 
-        findViewById<View>(R.id.btnBack).setOnClickListener { finish() }
-        findViewById<View>(R.id.btnReload).setOnClickListener { loadHistory() }
-        findViewById<View>(R.id.btnMore).setOnClickListener { showActions() }
+        view.findViewById<View>(R.id.btnBack).setOnClickListener { goBackToList() }
+        view.findViewById<View>(R.id.btnReload).setOnClickListener { loadHistory() }
+        view.findViewById<View>(R.id.btnMore).setOnClickListener { showActions() }
 
-        searchBar = findViewById(R.id.searchBar)
-        searchInput = findViewById(R.id.searchInput)
-        searchCount = findViewById(R.id.searchCount)
-        searchScroll = findViewById(R.id.searchScroll)
-        searchResults = findViewById(R.id.searchResults)
-        findViewById<View>(R.id.btnSearch).setOnClickListener { openSearch() }
-        findViewById<View>(R.id.btnCloseSearch).setOnClickListener { closeSearch() }
-        findViewById<View>(R.id.btnPrevMatch).setOnClickListener { stepMatch(-1) }
-        findViewById<View>(R.id.btnNextMatch).setOnClickListener { stepMatch(1) }
+        searchBar = view.findViewById(R.id.searchBar)
+        searchInput = view.findViewById(R.id.searchInput)
+        searchCount = view.findViewById(R.id.searchCount)
+        searchScroll = view.findViewById(R.id.searchScroll)
+        searchResults = view.findViewById(R.id.searchResults)
+        view.findViewById<View>(R.id.btnSearch).setOnClickListener { openSearch() }
+        view.findViewById<View>(R.id.btnCloseSearch).setOnClickListener { closeSearch() }
+        view.findViewById<View>(R.id.btnPrevMatch).setOnClickListener { stepMatch(-1) }
+        view.findViewById<View>(R.id.btnNextMatch).setOnClickListener { stepMatch(1) }
         searchInput.addTextChangedListener(object : TextWatcher {
             override fun afterTextChanged(s: Editable?) = scheduleSearch()
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
@@ -225,6 +301,20 @@ class ChatActivity : Activity() {
         }
         restoreDraft()
         updateSendState()
+        renderEmptyState()
+    }
+
+    /** Page 2 without an open session: an explicit empty state, not a blank
+     *  screen or a crash. The banner disappears the moment a session opens. */
+    private fun renderEmptyState() {
+        val empty = view?.findViewById<View>(R.id.chatEmpty) ?: return
+        empty.visibility = if (sessionId == null) View.VISIBLE else View.GONE
+    }
+
+    /** Back from the chat: to the sessions page, never finish() — the host
+     *  owns the pager and the back stack. */
+    private fun goBackToList() {
+        (activity as? Host)?.onChatBack()
     }
 
     // ── Composer draft ────────────────────────────────────────────────────────
@@ -235,42 +325,37 @@ class ChatActivity : Activity() {
      */
     private fun draftKey(): String = "draft:" + (sessionId ?: "new")
 
+    private fun draftPrefs() =
+        requireActivity().getSharedPreferences("ChatFragment", Context.MODE_PRIVATE)
+
     private fun saveDraft() {
         if (input.text.isBlank()) {
-            getPreferences(Context.MODE_PRIVATE).edit().remove(draftKey()).apply()
+            draftPrefs().edit().remove(draftKey()).apply()
         } else {
-            getPreferences(Context.MODE_PRIVATE).edit().putString(draftKey(), input.text.toString()).apply()
+            draftPrefs().edit().putString(draftKey(), input.text.toString()).apply()
         }
     }
 
     private fun restoreDraft() {
-        val saved = getPreferences(Context.MODE_PRIVATE).getString(draftKey(), null) ?: return
+        val saved = draftPrefs().getString(draftKey(), null) ?: return
         input.setText(saved)
         input.setSelection(input.text.length)
     }
 
     private fun clearDraft() {
-        getPreferences(Context.MODE_PRIVATE).edit().remove(draftKey()).apply()
+        draftPrefs().edit().remove(draftKey()).apply()
     }
 
     /**
-     * A notification tap while this screen is already open.
-     *
-     * The activity is `singleTop`, so Android reuses the running instance and
-     * hands the intent here instead of creating a new one. Ignoring it meant a tap
-     * from the shade did nothing visible: the screen kept showing the previous
-     * session, or the session it opened never subscribed to events.
+     * A notification tap (or a tap on a session row) while this page is already
+     * open. This is what the old `onNewIntent` did: switch the session in place,
+     * without recreating the fragment. A null id just re-syncs the current one.
      */
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        val incoming = intent.getStringExtra(EXTRA_SESSION_ID)
-        val incomingTitle = intent.getStringExtra(EXTRA_SESSION_TITLE)
-        if (incoming == null) return
-        if (incoming != sessionId) {
+    fun openSession(id: String, title: String?) {
+        if (id != sessionId) {
             saveDraft() // the draft belongs to the session it was typed in
-            sessionId = incoming
-            title.text = incomingTitle ?: getString(R.string.new_session)
+            sessionId = id
+            this.title.text = title ?: getString(R.string.new_session)
             adapter.submit(emptyList())
             olderOffset = 0
             lastSeenMs = 0
@@ -279,9 +364,10 @@ class ChatActivity : Activity() {
             totalMessages = -1
             if (searchOpen) closeSearch()
         }
-        Notifications.cancelWorking(this)
+        if (context != null) Notifications.cancelWorking(requireContext())
         loadHistory()
-        startLive(incoming)
+        startLive(id)
+        renderEmptyState()
     }
 
     /**
@@ -372,7 +458,7 @@ class ChatActivity : Activity() {
         searchBar.visibility = View.VISIBLE
         searchScroll.visibility = View.VISIBLE
         searchInput.requestFocus()
-        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        val imm = requireContext().getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         imm.showSoftInput(searchInput, 0)
         val id = sessionId ?: return
         if (transcript.isEmpty() && !transcriptLoading) indexTranscript(id)
@@ -433,14 +519,14 @@ class ChatActivity : Activity() {
             searchCount.visibility = View.GONE
             return
         }
-        val scopeNote = TextView(this).apply {
+        val scopeNote = TextView(requireContext()).apply {
             text = getString(
                 R.string.search_scope,
                 if (transcriptLoading) 0 else transcript.size,
                 if (totalMessages > 0) totalMessages else transcript.size
             )
             textSize = 11f
-            setTextColor(getColor(R.color.text_secondary))
+            setTextColor(requireContext().getColor(R.color.text_secondary))
         }
         searchResults.addView(scopeNote)
         if (transcriptLoading) return
@@ -466,19 +552,19 @@ class ChatActivity : Activity() {
 
     /** One compact result line: time · role · fragment with the match bold. */
     private fun matchRow(m: ChatMessage, q: String): View {
-        val row = LinearLayout(this).apply {
+        val row = LinearLayout(requireContext()).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, 10, 0, 10)
         }
-        val head = TextView(this).apply {
+        val head = TextView(requireContext()).apply {
             text = formatTime(m.timestamp) + " · " + roleLabel(m)
             textSize = 11f
-            setTextColor(getColor(R.color.text_secondary))
+            setTextColor(requireContext().getColor(R.color.text_secondary))
         }
-        val body = TextView(this).apply {
+        val body = TextView(requireContext()).apply {
             text = highlight(m.content, q)
             textSize = 13f
-            setTextColor(getColor(R.color.text_primary))
+            setTextColor(requireContext().getColor(R.color.text_primary))
             maxLines = 3
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
@@ -560,15 +646,15 @@ class ChatActivity : Activity() {
             type = "image/*"
         }
         runCatching {
-            startActivityForResult(Intent.createChooser(intent, getString(R.string.attach_image)), REQ_PICK_IMAGE)
-        }.onFailure { Toast.makeText(this, R.string.no_gallery, Toast.LENGTH_SHORT).show() }
+            pickImageLauncher.launch(Intent.createChooser(intent, getString(R.string.attach_image)))
+        }.onFailure { Toast.makeText(context, R.string.no_gallery, Toast.LENGTH_SHORT).show() }
     }
 
     /** The paperclip now offers both branches: the working image picker and the
      *  any-type file picker. Image logic below is untouched on purpose. */
     private fun showAttachMenu() {
         val options = arrayOf(getString(R.string.attach_photo), getString(R.string.attach_file))
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(requireContext())
             .setTitle(R.string.attach_menu_title)
             .setItems(options) { _, which -> if (which == 0) pickImage() else pickFile() }
             .show()
@@ -580,8 +666,8 @@ class ChatActivity : Activity() {
             type = "*/*"
         }
         runCatching {
-            startActivityForResult(Intent.createChooser(intent, getString(R.string.attach_file)), REQ_PICK_FILE)
-        }.onFailure { Toast.makeText(this, R.string.no_file_picker, Toast.LENGTH_SHORT).show() }
+            pickFileLauncher.launch(Intent.createChooser(intent, getString(R.string.attach_file)))
+        }.onFailure { Toast.makeText(context, R.string.no_file_picker, Toast.LENGTH_SHORT).show() }
     }
 
     /** Size for the confirm dialog; adapter has its own copy for the row. */
@@ -595,15 +681,15 @@ class ChatActivity : Activity() {
      *  20 MB BEFORE reading it whole (querySize first, chunked copy after). */
     private fun readFile(uri: Uri): PendingFile? = runCatching {
         val size = runCatching {
-            contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+            requireContext().contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
         }.getOrDefault(-1L)
         if (size > MAX_FILE_BYTES) return@runCatching null
         var name: String? = null
-        contentResolver.query(uri, null, null, null, null)?.use { c ->
+        requireContext().contentResolver.query(uri, null, null, null, null)?.use { c ->
             if (c.moveToFirst()) name = c.getString(c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME))
         }
         val bos = java.io.ByteArrayOutputStream()
-        contentResolver.openInputStream(uri)?.use { ins ->
+        requireContext().contentResolver.openInputStream(uri)?.use { ins ->
             val buf = ByteArray(64 * 1024)
             while (true) {
                 val n = ins.read(buf)
@@ -628,58 +714,16 @@ class ChatActivity : Activity() {
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
         }
         try {
-            startActivityForResult(intent, REQ_SPEECH)
+            speechLauncher.launch(intent)
         } catch (e: ActivityNotFoundException) {
-            Toast.makeText(this, R.string.speech_unavailable, Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQ_PICK_IMAGE) {
-            if (resultCode != RESULT_OK || data?.data == null) return
-            val uri = data.data!!
-            scope.launch {
-                val decoded = withContext(Dispatchers.IO) { decodeImage(uri) }
-                if (decoded == null) {
-                    runOnUiThread { Toast.makeText(this@ChatActivity, R.string.image_too_big, Toast.LENGTH_LONG).show() }
-                    return@launch
-                }
-                pendingImage = decoded
-                runOnUiThread {
-                    showPendingImage()
-                    updateSendState()
-                }
-            }
-        } else if (requestCode == REQ_PICK_FILE) {
-            if (resultCode != RESULT_OK || data?.data == null) return
-            val uri = data.data!!
-            scope.launch {
-                val picked = withContext(Dispatchers.IO) { readFile(uri) }
-                if (picked == null) {
-                    runOnUiThread {
-                        Toast.makeText(this@ChatActivity, R.string.file_too_big, Toast.LENGTH_LONG).show()
-                    }
-                    return@launch
-                }
-                // Name and size up front — never send a file sight-unseen.
-                runOnUiThread { confirmFile(picked) }
-            }
-        } else if (requestCode == REQ_SPEECH) {
-            if (resultCode != RESULT_OK) return
-            val text = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-                ?.firstOrNull { it.isNotBlank() } ?: return
-            input.append((if (input.text.isNotEmpty() && !input.text.last().isWhitespace()) " " else "") + text)
-            input.setSelection(input.text.length)
-            input.requestFocus()
+            Toast.makeText(context, R.string.speech_unavailable, Toast.LENGTH_SHORT).show()
         }
     }
 
     /** Downscale to ≤1600px and re-encode PNG/JPEG: a 12MP photo is a 4MB blob
      *  the gateway would refuse, and base64 inflates it another 33%. */
     private fun decodeImage(uri: Uri): PendingImage? = runCatching {
-        val source = android.graphics.ImageDecoder.createSource(contentResolver, uri)
+        val source = android.graphics.ImageDecoder.createSource(requireContext().contentResolver, uri)
         val bitmap = android.graphics.ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
             decoder.setTargetSampleSize(4)
             decoder.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
@@ -700,7 +744,7 @@ class ChatActivity : Activity() {
         PendingImage(uri, android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP), name)
     }.getOrNull()
 
-    private fun showPendingImage() {        val frame = findViewById<android.widget.FrameLayout>(R.id.attachPreview)
+    private fun showPendingImage() {        val frame = view!!.findViewById<android.widget.FrameLayout>(R.id.attachPreview)
         val img = frame.findViewById<android.widget.ImageView>(R.id.attachThumb)
         val remove = frame.findViewById<View>(R.id.attachRemove)
         frame.visibility = View.VISIBLE
@@ -716,7 +760,7 @@ class ChatActivity : Activity() {
      *  send happens through the normal submit() — the file rides along. */
     private fun confirmFile(picked: PendingFile) {
         val size = formatFileSize(picked.size)
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(requireContext())
             .setTitle(R.string.attach_file)
             .setMessage(getString(R.string.file_send_confirm, picked.name, size))
             .setPositiveButton(R.string.send) { _, _ ->
@@ -738,7 +782,7 @@ class ChatActivity : Activity() {
 
         val image = pendingImage
         pendingImage = null
-        findViewById<android.widget.FrameLayout>(R.id.attachPreview).visibility = View.GONE
+        view?.findViewById<android.widget.FrameLayout>(R.id.attachPreview)?.visibility = View.GONE
         val file = pendingFile
         pendingFile = null
 
@@ -756,6 +800,7 @@ class ChatActivity : Activity() {
                 }
                 sessionId = created
                 title.text = text.take(60)
+                renderEmptyState()
                 sendTurn(created, text, image, file)
             }
             return
@@ -781,7 +826,7 @@ class ChatActivity : Activity() {
         clearDraft()
         if (!steerHintShown) {
             steerHintShown = true
-            Toast.makeText(this, R.string.steer_hint_toast, Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, R.string.steer_hint_toast, Toast.LENGTH_SHORT).show()
         }
         adapter.addSteer(text)
         scrollToEnd()
@@ -810,8 +855,8 @@ class ChatActivity : Activity() {
         // A long answer has to survive the screen going off: the socket lives in
         // this process, and without a foreground service Android is free to freeze
         // it the moment the chat is not visible.
-        TurnWatchService.start(this, id, title.text.toString())
-        Running.started(this, id)
+        TurnWatchService.start(requireContext(), id, title.text.toString())
+        Running.started(requireContext(), id)
         sawDeltaThisTurn = false
         baselineText = null
         // A stale index would repaint a row from the previous turn instead of the
@@ -836,15 +881,15 @@ class ChatActivity : Activity() {
                         file?.dataUrl, file?.name) { event -> onEvent(event) }
                 }
                 if (file != null) {
-                    runOnUiThread { status.text = getString(R.string.file_sent) }
+                    ui.post { status.text = getString(R.string.file_sent) }
                 }
             } catch (e: Exception) {
-                runOnUiThread { onEvent(ChatEvent.Error(e.message ?: "Ошибка")) }
+                ui.post { onEvent(ChatEvent.Error(e.message ?: "Ошибка")) }
             }
         }
         startHistoryFallback(id)
         if (!resumed) {
-            Notifications.showWorking(this, id, title.text.toString(), getString(R.string.waiting))
+            Notifications.showWorking(requireContext(), id, title.text.toString(), getString(R.string.waiting))
         }
     }
 
@@ -858,7 +903,7 @@ class ChatActivity : Activity() {
         val key = fileRowKey
         if (key != null) adapter.setUserFileNote(key, "📎 ${file.name} — $msg")
         status.text = msg
-        val retry = AlertDialog.Builder(this)
+        val retry = AlertDialog.Builder(requireContext())
             .setTitle(R.string.retry)
             .setMessage("${file.name}: $msg")
             .setPositiveButton(R.string.retry) { _, _ ->
@@ -929,9 +974,9 @@ class ChatActivity : Activity() {
         adapter.notifyDataSetChanged()
         scrollToEnd()
         if (!resumed) {
-            Notifications.showAnswer(this, sessionId, title.text.toString(), lastFinalText.take(300))
+            Notifications.showAnswer(requireContext(), sessionId, title.text.toString(), lastFinalText.take(300))
         } else {
-            Notifications.cancelWorking(this)
+            Notifications.cancelWorking(requireContext())
         }
     }
 
@@ -952,7 +997,7 @@ class ChatActivity : Activity() {
             lastNotifyMs = System.currentTimeMillis()
             val tail = adapter.currentAssistantText().takeLast(200).trim()
             if (tail.isNotEmpty()) {
-                Notifications.showWorking(this, sessionId, title.text.toString(), "…" + tail)
+                Notifications.showWorking(requireContext(), sessionId, title.text.toString(), "…" + tail)
             }
         }
     }
@@ -989,25 +1034,25 @@ class ChatActivity : Activity() {
 
             is ChatEvent.ToolStarted -> {
                 pendingIndex = adapter.startTool(event.name, event.preview, event.args)
-                runOnUiThread {
+                ui.post {
                     adapter.notifyItemInserted(pendingIndex)
                     status.text = event.name
                     scrollToEnd()
                 }
             }
 
-            is ChatEvent.ToolFinished -> runOnUiThread {
+            is ChatEvent.ToolFinished -> ui.post {
                 status.text = event.name
             }
 
             is ChatEvent.Completed -> {
                 lastFinalText = event.content
                 adapter.finishTurn(event.content)
-                runOnUiThread { adapter.notifyDataSetChanged() }
+                ui.post { adapter.notifyDataSetChanged() }
                 maybeAutoTitle(event.content)
             }
 
-            is ChatEvent.Error -> runOnUiThread {
+            is ChatEvent.Error -> ui.post {
                 streaming = false
                 updateSendState()
                 status.visibility = View.VISIBLE
@@ -1018,16 +1063,16 @@ class ChatActivity : Activity() {
                     // a bare toast the user cannot act on.
                     onFileTurnFailed(f, failedText, event.message)
                 } else {
-                    Toast.makeText(this, event.message, Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, event.message, Toast.LENGTH_LONG).show()
                 }
             }
 
-            is ChatEvent.Done -> runOnUiThread {
+            is ChatEvent.Done -> ui.post {
                 streaming = false
                 // The turn is over, so the protection is no longer needed and the
                 // card it holds is replaced by the answer notification below.
-                TurnWatchService.stop(this)
-                sessionId?.let { Running.finished(this, it) }
+                TurnWatchService.stop(requireContext())
+                sessionId?.let { Running.finished(requireContext(), it) }
                 fallbackJob?.cancel()
                 runId = null
                 updateSendState()
@@ -1042,20 +1087,20 @@ class ChatActivity : Activity() {
                     val snippet = lastFinalText.takeIf { it.isNotBlank() }
                         ?: adapter.currentAssistantText()
                     if (snippet.isNotBlank()) {
-                        Notifications.showAnswer(this, sessionId, title.text.toString(), snippet.take(400))
+                        Notifications.showAnswer(requireContext(), sessionId, title.text.toString(), snippet.take(400))
                     } else {
                         scope.launch {
                             val stored = withContext(Dispatchers.IO) {
                                 sessionId?.let { api.latestAssistantText(it) }.orEmpty()
                             }
                             Notifications.showAnswer(
-                                this@ChatActivity, sessionId, title.text.toString(),
+                                requireContext(), sessionId, title.text.toString(),
                                 stored.take(400).ifBlank { "Ответ готов" }
                             )
                         }
                     }
                 } else {
-                    Notifications.cancelWorking(this)
+                    Notifications.cancelWorking(requireContext())
                 }
             }
         }
@@ -1068,7 +1113,7 @@ class ChatActivity : Activity() {
         val sid = sessionId ?: return
         scope.launch {
             val newTitle = withContext(Dispatchers.IO) { api.autoTitle(sid, answerText) }
-            if (newTitle != null) runOnUiThread { title.text = newTitle }
+            if (newTitle != null) ui.post { title.text = newTitle }
         }
     }
 
@@ -1089,8 +1134,8 @@ class ChatActivity : Activity() {
     private fun stopTurn() {
         streamJob?.cancel()
         streaming = false
-        TurnWatchService.stop(this)
-        sessionId?.let { Running.finished(this, it) }
+        TurnWatchService.stop(requireContext())
+        sessionId?.let { Running.finished(requireContext(), it) }
         updateSendState()
         // The turn lives on the server, not in this coroutine: cancelling the
         // job only stops listening, so the run has to be interrupted too.
@@ -1130,10 +1175,10 @@ class ChatActivity : Activity() {
             val providers = withContext(Dispatchers.IO) { api.modelOptions() }
             modelPickerOpen = false
             if (providers.isEmpty()) {
-                Toast.makeText(this@ChatActivity, api.error ?: "Список моделей не получен", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, api.error ?: "Список моделей не получен", Toast.LENGTH_LONG).show()
                 return@launch
             }
-            runOnUiThread { ModelPickerDialog(this@ChatActivity, providers, currentModel) { picked -> switchModel(id, picked) }.show() }
+            ui.post { activity?.let { ModelPickerDialog(it, providers, currentModel) { picked -> switchModel(id, picked) }.show() } }
         }
     }
 
@@ -1145,11 +1190,11 @@ class ChatActivity : Activity() {
             val result = withContext(Dispatchers.IO) { api.setSessionModel(id, slug) }
             if (result.ok) {
                 setModelChip(result.model ?: slug)
-                Toast.makeText(this@ChatActivity, getString(R.string.model_switched, result.model ?: slug), Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, getString(R.string.model_switched, result.model ?: slug), Toast.LENGTH_SHORT).show()
             } else {
                 currentModel = previous
                 setModelChip(previous)
-                Toast.makeText(this@ChatActivity, getString(R.string.model_switch_failed, result.reason ?: ""), Toast.LENGTH_LONG).show()
+                Toast.makeText(context, getString(R.string.model_switch_failed, result.reason ?: ""), Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -1161,7 +1206,7 @@ class ChatActivity : Activity() {
      */
     private fun showModes() {
         val id = sessionId ?: return
-        ModesDialog(this, api, id) { key, value ->
+        ModesDialog(requireActivity(), api, id) { key, value ->
             scope.launch(Dispatchers.IO) { api.setMode(id, key, value) }
         }.show()
     }
@@ -1176,14 +1221,14 @@ class ChatActivity : Activity() {
             getString(R.string.modes),
             getString(R.string.delete)
         )
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(requireContext())
             .setTitle(title.text)
             .setItems(items) { _, which ->
                 when (which) {
                     0 -> askRename(id)
                     1 -> scope.launch {
                         withContext(Dispatchers.IO) { api.setPinned(id, true) }
-                        Toast.makeText(this@ChatActivity, R.string.pin, Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, R.string.pin, Toast.LENGTH_SHORT).show()
                     }
                     2 -> showModes()
                     3 -> askDelete(id)
@@ -1194,12 +1239,12 @@ class ChatActivity : Activity() {
     }
 
     private fun askRename(id: String) {
-        val field = EditText(this).apply {
+        val field = EditText(requireContext()).apply {
             setText(title.text)
             setSingleLine(true)
             setPadding(48, 32, 48, 32)
         }
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(requireContext())
             .setTitle(R.string.rename)
             .setView(field)
             .setPositiveButton(android.R.string.ok) { _, _ ->
@@ -1215,15 +1260,15 @@ class ChatActivity : Activity() {
     }
 
     private fun askDelete(id: String) {
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(requireContext())
             .setTitle(R.string.delete)
             .setMessage(title.text)
             .setPositiveButton(R.string.delete) { _, _ ->
                 scope.launch {
                     val ok = withContext(Dispatchers.IO) { api.deleteSession(id) }
                     if (ok) {
-                        Toast.makeText(this@ChatActivity, R.string.deleted, Toast.LENGTH_SHORT).show()
-                        finish()
+                        Toast.makeText(context, R.string.deleted, Toast.LENGTH_SHORT).show()
+                        goBackToList()
                     }
                 }
             }
@@ -1267,7 +1312,7 @@ class ChatActivity : Activity() {
         scrolledUp = !atBottom
         if (scrolledUp) {
             btnDown.visibility = View.VISIBLE
-            btnDown.setColorFilter(getColor(if (streaming) R.color.accent else R.color.text_secondary))
+            btnDown.setColorFilter(requireContext().getColor(if (streaming) R.color.accent else R.color.text_secondary))
             btnDown.contentDescription =
                 getString(if (streaming) R.string.new_messages else R.string.scroll_down)
         } else {
@@ -1276,7 +1321,7 @@ class ChatActivity : Activity() {
     }
 
     private fun hideKeyboard() {
-        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        val imm = requireContext().getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(input.windowToken, 0)
     }
 
@@ -1314,14 +1359,14 @@ class ChatActivity : Activity() {
         val idx = adapter.addQuestion(request)
         list.scrollToPosition(idx)
         if (!resumed) {
-            Notifications.showRequest(this, sessionId, title.text.toString(), request)
+            Notifications.showRequest(requireContext(), sessionId, title.text.toString(), request)
         }
     }
 
     private fun onRequestCancelled(requestId: String) {
         if (!adapter.hasQuestion(requestId)) return
         adapter.resolveQuestion(requestId, getString(R.string.question_cancelled))
-        Notifications.cancelRequest(this, Notifications.ID_REQUEST_BASE + requestId.hashCode() % 1000)
+        Notifications.cancelRequest(requireContext(), Notifications.ID_REQUEST_BASE + requestId.hashCode() % 1000)
         scrollToEnd()
     }
 
@@ -1339,7 +1384,7 @@ class ChatActivity : Activity() {
             answer == null -> api.answerClarify(requestId, qid, null)
             else -> api.answerClarify(requestId, qid, answer)
         }
-        Notifications.cancelRequest(this, Notifications.ID_REQUEST_BASE + requestId.hashCode() % 1000)
+        Notifications.cancelRequest(requireContext(), Notifications.ID_REQUEST_BASE + requestId.hashCode() % 1000)
         adapter.resolveQuestion(
             requestId,
             label?.let { getString(R.string.answered, it) } ?: getString(R.string.question_cancelled)
@@ -1360,11 +1405,11 @@ class ChatActivity : Activity() {
         resumed = true
         // The list owns the message count; this just says "this one was on
         // screen", so the next listing can mark it read.
-        sessionId?.let { ReadMarks.noteOpened(this, it) }
+        sessionId?.let { ReadMarks.noteOpened(requireContext(), it) }
         // Opening a chat that is not streaming anything means the turn this phone
         // started is over: drop the local "running" entry, or the row in the list
         // keeps pulsing after the answer has been read.
-        if (!streaming) sessionId?.let { Running.finished(this, it) }
+        if (!streaming) sessionId?.let { Running.finished(requireContext(), it) }
         // Requests answered from the shade while the process was alive but the
         // screen closed: their cards are stale, resolve them quietly.
         for ((requestId, choice) in pendingAnswered) {
@@ -1379,11 +1424,10 @@ class ChatActivity : Activity() {
         super.onPause()
         resumed = false
         // Leaving: whatever was written while the chat was open has been seen.
-        sessionId?.let { ReadMarks.noteOpened(this, it) }
+        sessionId?.let { ReadMarks.noteOpened(requireContext(), it) }
         saveDraft()
         if (streaming) {
-            Notifications.showWorking(
-                this, sessionId, title.text.toString(), getString(R.string.waiting)
+            Notifications.showWorking(requireContext(), sessionId, title.text.toString(), getString(R.string.waiting)
             )
         }
     }
@@ -1393,7 +1437,7 @@ class ChatActivity : Activity() {
         streamJob?.cancel()
         // Only when nothing is running. Leaving the screen mid-turn must NOT drop
         // the foreground service — that is the whole point of it.
-        if (!streaming) TurnWatchService.stop(this)
+        if (context != null && !streaming) TurnWatchService.stop(requireContext())
         fallbackJob?.cancel()
         liveJob?.cancel()
         scope.cancel()
@@ -1404,6 +1448,11 @@ class ChatActivity : Activity() {
         // socket up so a turn started here still completes and notifies.
         api.detach()
         super.onDestroy()
+    }
+
+    override fun onDetach() {
+        act = null
+        super.onDetach()
     }
 
     companion object {

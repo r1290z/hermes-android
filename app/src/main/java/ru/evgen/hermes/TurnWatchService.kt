@@ -20,7 +20,7 @@ import android.os.IBinder
  * is the same "Работаю" card the app already posts, so the user sees no
  * difference other than that it keeps working.
  *
- * Lifecycle is driven by [ChatActivity]: started when a turn begins, stopped when
+ * Lifecycle is driven by [ChatFragment]: started when a turn begins, stopped when
  * it ends or the user is looking at the chat. START_NOT_STICKY on purpose — a
  * resurrected service with no socket behind it would only show a lying card.
  */

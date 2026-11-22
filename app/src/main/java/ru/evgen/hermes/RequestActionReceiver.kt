@@ -8,7 +8,7 @@ import android.content.Intent
  * «Разрешить»/«Отклонить» straight from the notification shade: answers the
  * pending approval without opening the app.
  *
- * The reply needs the still-open gateway socket held by ChatActivity's
+ * The reply needs the still-open gateway socket held by ChatFragment's
  * ApiClient (a fresh ApiClient here would have no socket). If the process died
  * with the activity there is nothing to answer on — the server retracts the
  * request on timeout anyway.
@@ -20,8 +20,8 @@ class RequestActionReceiver : BroadcastReceiver() {
         val requestId = intent.getStringExtra(EXTRA_REQUEST_ID) ?: return
         val choice = intent.getStringExtra(EXTRA_CHOICE) ?: return
         Notifications.cancelRequest(context, requestId.hashCode())
-        ChatActivity.liveApi?.answerApproval(requestId, choice)
-        ChatActivity.pendingAnswered[requestId] = choice
+        ChatFragment.liveApi?.answerApproval(requestId, choice)
+        ChatFragment.pendingAnswered[requestId] = choice
     }
 
     companion object {

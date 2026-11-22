@@ -187,7 +187,7 @@ object Notifications {
             action = RequestActionReceiver.ACTION_ANSWER
             putExtra(RequestActionReceiver.EXTRA_REQUEST_ID, requestId)
             putExtra(RequestActionReceiver.EXTRA_CHOICE, choice)
-            if (sessionId != null) putExtra(ChatActivity.EXTRA_SESSION_ID, sessionId)
+            if (sessionId != null) putExtra(MainActivity.EXTRA_SESSION_ID, sessionId)
         }
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or
             (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
@@ -195,9 +195,9 @@ object Notifications {
     }
 
     private fun openIntent(context: Context, sessionId: String?): PendingIntent {
-        val intent = Intent(context, ChatActivity::class.java).apply {
+        val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            if (sessionId != null) putExtra(ChatActivity.EXTRA_SESSION_ID, sessionId)
+            if (sessionId != null) putExtra(MainActivity.EXTRA_SESSION_ID, sessionId)
         }
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or
             (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)

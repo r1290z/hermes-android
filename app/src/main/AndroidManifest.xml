@@ -29,20 +29,13 @@
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode|density"
             android:exported="true"
             android:launchMode="singleTask"
-            android:theme="@style/Theme.Hermes">
+            android:theme="@style/Theme.Hermes"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <activity
-            android:name=".ChatActivity"
-            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode|density"
-            android:exported="false"
-            android:launchMode="singleTop"
-            android:theme="@style/Theme.Hermes"
-            android:windowSoftInputMode="adjustResize" />
 
         <activity
             android:name=".LoginActivity"

@@ -110,6 +110,19 @@
         android:layout_height="0dp"
         android:layout_weight="1">
 
+        <!-- Page 2 with no session open: an explicit hint instead of a blank
+             screen. Hidden the moment a session opens (renderEmptyState). -->
+        <TextView
+            android:id="@+id/chatEmpty"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:padding="32dp"
+            android:text="@string/chat_pick_session"
+            android:textColor="@color/text_secondary"
+            android:textSize="14sp"
+            android:visibility="gone" />
+
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/messages"
             android:layout_width="match_parent"

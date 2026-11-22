@@ -37,6 +37,9 @@ class SessionsFragment : Fragment(R.layout.fragment_sessions) {
     interface Host {
         fun onRefreshLongPress()
         fun onMoreClicked()
+
+        /** A session row (or «новый сеанс») was tapped: open it in the chat page. */
+        fun onOpenChat(id: String?, title: String?)
     }
 
     private lateinit var api: ApiClient
@@ -303,10 +306,7 @@ class SessionsFragment : Fragment(R.layout.fragment_sessions) {
     }
 
     private fun openChat(session: Session?) {
-        val intent = Intent(requireContext(), ChatActivity::class.java)
         session?.let {
-            intent.putExtra(ChatActivity.EXTRA_SESSION_ID, it.id)
-            intent.putExtra(ChatActivity.EXTRA_SESSION_TITLE, it.title)
             ReadMarks.markRead(requireContext(), it.id, it.messageCount)
             if (it.unread) {
                 // Optimistic clear: the dot must not survive the tap.
@@ -316,8 +316,8 @@ class SessionsFragment : Fragment(R.layout.fragment_sessions) {
                 // `unread` never comes back true.
                 scope.launch { withContext(Dispatchers.IO) { api.markRead(it.id) } }
             }
-        }
-        startActivity(intent)
+            (activity as? Host)?.onOpenChat(it.id, it.title)
+        } ?: (activity as? Host)?.onOpenChat(null, null)
     }
 
     // ── Profiles ─────────────────────────────────────────────────────────────
