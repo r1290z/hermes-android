@@ -176,6 +176,44 @@
         android:textSize="12sp"
         android:visibility="gone" />
 
+    <!-- Picked-but-unsent FILE: the composer used to give no sign at all that a
+         file was staged, so «Отправить» in the dialog looked like a no-op. -->
+    <LinearLayout
+        android:id="@+id/fileChip"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/bg_chip"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="12dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="4dp"
+        android:paddingBottom="8dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/fileChipName"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:ellipsize="middle"
+            android:maxLines="1"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp" />
+
+        <ImageButton
+            android:id="@+id/fileChipRemove"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/remove_file"
+            android:src="@drawable/ic_close"
+            android:tint="@color/text_secondary" />
+    </LinearLayout>
+
     <!-- Picked-but-unsent image: thumbnail with a remove cross. -->
     <FrameLayout
         android:id="@+id/attachPreview"

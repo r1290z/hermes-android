@@ -805,20 +805,51 @@ class ChatFragment : Fragment() {
         }
     }
 
-    /** Stage the picked file and let the user write an accompanying message;
-     *  send happens through the normal submit() — the file rides along. */
+    /**
+     * A picked file: confirm, then stage it visibly.
+     *
+     * Two buttons, because one was ambiguous. «Прикрепить» stages the file and the
+     * user types a message first; «Отправить сейчас» sends it immediately. The old
+     * single «Отправить» only staged — nothing appeared in the composer, so it
+     * looked like the file had been sent when nothing had left the phone.
+     */
     private fun confirmFile(picked: PendingFile) {
         val size = formatFileSize(picked.size)
         AlertDialog.Builder(requireContext())
             .setTitle(R.string.attach_file)
             .setMessage(getString(R.string.file_send_confirm, picked.name, size))
-            .setPositiveButton(R.string.send) { _, _ ->
+            .setPositiveButton(R.string.file_attach_only) { _, _ ->
                 pendingFile = picked
-                input.requestFocus()
+                showFileChip()
                 updateSendState()
+                input.requestFocus()
+            }
+            .setNeutralButton(R.string.file_send_now) { _, _ ->
+                pendingFile = picked
+                showFileChip()
+                updateSendState()
+                submit()
             }
             .setNegativeButton(R.string.cancel, null)
             .show()
+    }
+
+    /** The staged file, visible above the composer with its size and a cross. */
+    private fun showFileChip() {
+        val chip = view?.findViewById<View>(R.id.fileChip) ?: return
+        val label = view?.findViewById<TextView>(R.id.fileChipName) ?: return
+        val file = pendingFile
+        if (file == null) {
+            chip.visibility = View.GONE
+            return
+        }
+        label.text = file.name + " · " + formatFileSize(file.size)
+        chip.visibility = View.VISIBLE
+        view?.findViewById<View>(R.id.fileChipRemove)?.setOnClickListener {
+            pendingFile = null
+            chip.visibility = View.GONE
+            updateSendState()
+        }
     }
 
     private fun submit() {
@@ -834,6 +865,8 @@ class ChatFragment : Fragment() {
         view?.findViewById<android.widget.FrameLayout>(R.id.attachPreview)?.visibility = View.GONE
         val file = pendingFile
         pendingFile = null
+        showFileChip()
+        if (file != null) Diag.log("file", "отправка ${file.name}, ${file.size} байт")
 
         val id = sessionId
         if (id == null) {
