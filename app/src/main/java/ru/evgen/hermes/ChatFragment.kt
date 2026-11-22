@@ -186,11 +186,19 @@ class ChatFragment : Fragment() {
                 }
             }
             REQ_PICK_FILE -> {
-                val uri = data?.data ?: return
+                val uri = data?.data
+                if (uri == null) {
+                    Diag.log("file", "выбор файла не вернул uri")
+                    return
+                }
+                Diag.log("file", "выбран: $uri")
                 scope.launch {
-                    val picked = withContext(Dispatchers.IO) { readFile(uri) }
+                    val (picked, why) = withContext(Dispatchers.IO) { readFile(uri) }
                     if (picked == null) {
-                        ui.post { Toast.makeText(context, R.string.file_too_big, Toast.LENGTH_LONG).show() }
+                        Diag.log("file", "не прочитан: ${why ?: "?"}")
+                        val msg = why?.let { getString(R.string.file_read_failed, it) }
+                            ?: getString(R.string.file_too_big)
+                        ui.post { Toast.makeText(context, msg, Toast.LENGTH_LONG).show() }
                         return@launch
                     }
                     // Name and size up front — never send a file sight-unseen.
@@ -726,31 +734,59 @@ class ChatFragment : Fragment() {
         else -> "$bytes Б"
     }
 
-    /** Streams the picked document into a data URL, refusing anything above
-     *  20 MB BEFORE reading it whole (querySize first, chunked copy after). */
-    private fun readFile(uri: Uri): PendingFile? = runCatching {
-        val size = runCatching {
-            requireContext().contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
-        }.getOrDefault(-1L)
-        if (size > MAX_FILE_BYTES) return@runCatching null
+    /**
+     * Streams the picked document into a data URL.
+     *
+     * Returns the reason on failure instead of a bare null: every failure used to
+     * surface as «файл слишком большой», which is wrong for an unreadable URI, a
+     * provider that refuses the stream, or a name lookup that throws — and it left
+     * nothing in the log to tell them apart.
+     */
+    private fun readFile(uri: Uri): Pair<PendingFile?, String?> {
+        var size = -1L
         var name: String? = null
-        requireContext().contentResolver.query(uri, null, null, null, null)?.use { c ->
-            if (c.moveToFirst()) name = c.getString(c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME))
-        }
-        val bos = java.io.ByteArrayOutputStream()
-        requireContext().contentResolver.openInputStream(uri)?.use { ins ->
-            val buf = ByteArray(64 * 1024)
-            while (true) {
-                val n = ins.read(buf)
-                if (n < 0) break
-                bos.write(buf, 0, n)
-                if (bos.size() > MAX_FILE_BYTES) return@runCatching null
+        val bytes = try {
+            size = runCatching {
+                requireContext().contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length }
+                    ?: -1L
+            }.getOrDefault(-1L)
+            if (size > MAX_FILE_BYTES) {
+                return null to "файл ${formatFileSize(size)} — больше лимита ${formatFileSize(MAX_FILE_BYTES)}"
             }
-        } ?: return@runCatching null
-        val b64 = android.util.Base64.encodeToString(bos.toByteArray(), android.util.Base64.NO_WRAP)
-        PendingFile(uri, name ?: "file", if (size >= 0) size else bos.size().toLong(),
-            "data:application/octet-stream;base64,$b64")
-    }.getOrNull()
+            runCatching {
+                requireContext().contentResolver.query(uri, null, null, null, null)?.use { c ->
+                    if (c.moveToFirst()) {
+                        val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (idx >= 0) name = c.getString(idx)
+                    }
+                }
+            }
+            val bos = java.io.ByteArrayOutputStream()
+            requireContext().contentResolver.openInputStream(uri)?.use { ins ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                    val n = ins.read(buf)
+                    if (n < 0) break
+                    bos.write(buf, 0, n)
+                    // Base64 grows by 4/3 and the gateway refuses frames above
+                    // ~16 MiB, so the raw cap is well below the file-manager limit.
+                    if (bos.size() > MAX_FILE_BYTES) return null to
+                        "файл больше ${formatFileSize(MAX_FILE_BYTES)}"
+                }
+            } ?: return null to "провайдер не отдал содержимое файла"
+            bos.toByteArray()
+        } catch (e: Exception) {
+            return null to (e.message ?: e.javaClass.simpleName)
+        }
+        val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+        val resolvedName = name ?: "file"
+        Diag.log("file", "прочитан $resolvedName, ${bytes.size} байт")
+        return PendingFile(
+            uri, resolvedName,
+            if (size >= 0) size else bytes.size.toLong(),
+            "data:application/octet-stream;base64,$b64"
+        ) to null
+    }
 
     /** System speech recognition: no RECORD_AUDIO permission of our own — the
      *  recognizer app records, we only get text back. Result is appended to the
@@ -1543,9 +1579,12 @@ class ChatFragment : Fragment() {
         const val REQ_PICK_IMAGE = 4101
         const val REQ_SPEECH = 4102
         const val REQ_PICK_FILE = 4103
-        /** Client-side cap for the file branch: below the gateway's 256 MB, the
-         *  phone refuses before burning mobile data on a doomed upload. */
-        const val MAX_FILE_BYTES = 20L * 1024 * 1024
+        /** Client-side cap for the file branch. The gateway itself accepts 256 MB,
+         *  but `file.attach` rides one WebSocket frame whose ceiling is ~16 MiB —
+         *  and base64 inflates by a third, so 12 MB raw is the honest maximum.
+         *  Above that the frame is rejected (or the socket drops) with no useful
+         *  message, which is why the phone refuses first and says so. */
+        const val MAX_FILE_BYTES = 12L * 1024 * 1024
 
         /** Rows per history page. 200 is ~0.5 MB of JSON on a busy session and
          *  still parses in well under a second; older pages load on demand. */

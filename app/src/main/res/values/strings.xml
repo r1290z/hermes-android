@@ -92,8 +92,7 @@
     <string name="attach_file">Файл</string>
     <string name="attach_menu_title">Что прикрепить?</string>
     <string name="no_file_picker">Нет приложения для выбора файлов</string>
-    <string name="file_too_big">Файл больше 20 МБ — не отправлю</string>
-    <string name="file_read_failed">Не удалось прочитать файл</string>
+    <string name="file_too_big">Файл слишком большой — не отправлю</string>
     <string name="file_send_confirm">Отправить «%1$s» (%2$s)?</string>
 
     <string name="sending_file">Отправляю файл…</string>
@@ -157,4 +156,5 @@
     <string name="file_attach_only">Прикрепить</string>
     <string name="file_send_now">Отправить сейчас</string>
     <string name="remove_file">Убрать файл</string>
+    <string name="file_read_failed">Не удалось прочитать файл: %1$s</string>
 </resources>
