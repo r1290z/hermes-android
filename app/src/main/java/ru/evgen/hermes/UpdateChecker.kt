@@ -171,7 +171,17 @@ object UpdateChecker {
             toast(activity, "Устанавливаю через Shizuku…")
             ShizukuInstall.install(activity, path) { ok, detail ->
                 if (ok) {
-                    toast(activity, "Обновлено — открой Hermes заново")
+                    // The new APK is on disk, but this process is still the old
+                    // code. Offering a restart is the difference between "updated"
+                    // and "updated and actually running the new build".
+                    Diag.log("update", "установлено: ${detail.replace("\n", " | ").take(160)}")
+                    android.app.AlertDialog.Builder(activity)
+                        .setTitle("Обновление установлено")
+                        .setMessage(detail.ifBlank { "pm: Success" } + "\n\nПерезапустить приложение, " +
+                            "чтобы заработала новая версия?")
+                        .setPositiveButton("Перезапустить") { _, _ -> restart(activity) }
+                        .setNegativeButton("Позже", null)
+                        .show()
                 } else {
                     Diag.log("update", "Shizuku не смог: ${detail.take(120)}")
                     // Say WHY, not just "не смог": pm's own words are the only
@@ -227,4 +237,24 @@ object UpdateChecker {
 
     private fun toast(context: Context, text: String) =
         Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+
+    /**
+     * Relaunches the app after an install.
+     *
+     * A plain `startActivity` from inside the activity being killed loses the
+     * race, so the intent is handed to AlarmManager first and the process is
+     * killed afterwards — that ordering is the whole trick.
+     */
+    private fun restart(activity: Activity) {
+        val intent = activity.packageManager.getLaunchIntentForPackage(activity.packageName) ?: return
+        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+        val pending = android.app.PendingIntent.getActivity(
+            activity, 227, intent,
+            android.app.PendingIntent.FLAG_CANCEL_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+        val alarm = activity.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+        alarm.set(android.app.AlarmManager.RTC, System.currentTimeMillis() + 150, pending)
+        activity.finishAffinity()
+        android.os.Process.killProcess(android.os.Process.myPid())
+    }
 }

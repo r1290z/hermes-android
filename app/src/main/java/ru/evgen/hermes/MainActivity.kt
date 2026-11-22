@@ -346,6 +346,7 @@ class MainActivity : Activity() {
                 "Проверить обновление",
                 "Shizuku: $shizuku",
                 "Фоновая работа",
+                "Лог и падения",
                 getString(R.string.logout)
             )) { _, which ->
                 when (which) {
@@ -353,6 +354,7 @@ class MainActivity : Activity() {
                     1 -> checkForUpdates(manual = true)
                     2 -> explainShizuku()
                     3 -> checkBackgroundWork()
+                    4 -> showLog()
                     else -> askLogout()
                 }
             }
@@ -476,6 +478,48 @@ class MainActivity : Activity() {
         val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
         cm.setPrimaryClip(android.content.ClipData.newPlainText("hermes", text))
         Toast.makeText(this, "Скопировано", Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * What the app knows about itself: its own event log (connection, turns,
+     * Shizuku, update steps) plus, when Shizuku is available, the Android crash
+     * buffer for this package.
+     *
+     * It exists because a crash report used to mean the user retyping a stack
+     * trace off the screen. Everything is copyable in one tap.
+     */
+    private fun showLog() {
+        val head = "Hermes " + versionName() + " (" + currentVersion() + ")\n" +
+            "Shizuku: " + ShizukuInstall.describe(this) + "\n\n"
+        val own = Diag.tail(120).ifBlank { "(журнал пуст — приложение ещё ничего не делало)" }
+
+        if (ShizukuInstall.state(this) != ShizukuInstall.State.READY) {
+            AlertDialog.Builder(this)
+                .setTitle("Лог")
+                .setMessage(head + own)
+                .setPositiveButton("Копировать") { _, _ -> copyToClipboard(head + own) }
+                .setNegativeButton("Закрыть", null)
+                .show()
+            return
+        }
+
+        // -t bounds the output: the crash buffer keeps days of unrelated noise.
+        val cmd = "logcat -b crash -d -t 200 2>/dev/null | tail -60"
+        ShizukuInstall.runCommand(this, cmd) { crashes ->
+            val text = head + own + "\n\n— падения (logcat -b crash) —\n" + crashes.ifBlank { "(пусто — падений не было)" }
+            AlertDialog.Builder(this)
+                .setTitle("Лог")
+                .setMessage(text)
+                .setPositiveButton("Копировать") { _, _ -> copyToClipboard(text) }
+                .setNegativeButton("Закрыть", null)
+                .show()
+        }
+    }
+
+    private fun versionName(): String = try {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+    } catch (e: Exception) {
+        "?"
     }
 
     private fun requestShizuku() {
