@@ -188,6 +188,25 @@ object ShizukuInstall {
             var ok = false
             var detail = ""
             try {
+                // `pm install` runs inside system_server, and SELinux forbids
+                // system_server from reading files under /storage/emulated (fuse).
+                // The shell user CAN read them, so the fix is to stage the APK in
+                // /data/local/tmp — which is exactly what the system's own error
+                // suggests ("Consider using a file under /data/local/tmp/").
+                // Without this the install died with
+                //   avc: denied { read } … tcontext=u:object_r:fuse:s0
+                // even though the shell could see the file perfectly well.
+                val staged = "/data/local/tmp/hermes-update.apk"
+                val copy = service.run(
+                    "cp " + shellQuote(path) + " " + staged + " && chmod 644 " + staged
+                )
+                val copyCode = copy.substringBefore('\n').trim().toIntOrNull() ?: -1
+                if (copyCode != 0) {
+                    val why = copy.substringAfter('\n', "").trim()
+                    Diag.log("shizuku", "копирование не удалось: ${why.take(120)}")
+                    main.post { onResult(false, "не смог скопировать APK в /data/local/tmp:\n$why") }
+                    return@Thread
+                }
                 // Play Protect runs its install-time verifier for shell installs
                 // when `verifier_verify_adb_installs` is 1, and pops "Install
                 // anyway?" for an app Google has never seen — our build is signed
@@ -195,7 +214,7 @@ object ShizukuInstall {
                 // global off is what makes the install silent; it is scoped to
                 // adb/shell installs only, not to installs from the file manager.
                 val cmd = "settings put global verifier_verify_adb_installs 0; " +
-                    "pm install -r -t " + shellQuote(path) +
+                    "pm install -r -t " + staged +
                     "; settings get global verifier_verify_adb_installs"
                 val raw = service.run(cmd)
                 val body = raw.substringAfter('\n', "")
@@ -205,6 +224,9 @@ object ShizukuInstall {
                 val verifier = body.lines().lastOrNull()?.trim().orEmpty()
                 detail = pmOut
                 ok = code == 0 && pmOut.contains("Success", ignoreCase = true)
+                // The staged copy is 2.8 MB in a shared shell directory: leaving it
+                // there means every update leaves another file behind.
+                service.run("rm -f " + staged)
                 if (ok) {
                     // "Success" from pm is what pm thinks, not what is installed.
                     // Read the version code back: if the phone still reports the
@@ -322,7 +344,11 @@ object ShizukuInstall {
         val cmd = buildString {
             append("id -u; ")
             append("pm path ").append(PKG).append("; ")
-            append("ls -1 /sdcard/Download 2>/dev/null | tail -5")
+            // The install path stages the APK here, and a shell without write access
+            // to /data/local/tmp would fail at the copy step — worth seeing before a
+            // failed update, not after.
+            append("touch /data/local/tmp/.hermes_probe && rm -f /data/local/tmp/.hermes_probe && echo 'tmp: пишу'; ")
+            append("ls -1 /sdcard/Download 2>/dev/null | tail -3")
         }
         runCommand(context, cmd, onResult)
     }
