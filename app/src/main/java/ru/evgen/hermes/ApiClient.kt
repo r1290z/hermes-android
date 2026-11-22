@@ -135,11 +135,14 @@ class ApiClient private constructor(context: Context) {
 
     // ── Sessions (REST) ──────────────────────────────────────────────────────
 
-    fun sessions(limit: Int = 100): List<Session> {
+    fun sessions(limit: Int = 100, order: String? = null): List<Session> {
         // `profile` scopes the listing to one profile's gateway; omitted for
         // the default (and for "all", which is the same thing on this server).
         val profileQuery = profile?.let { "&profile=$it" } ?: ""
-        val response = get("/api/sessions?limit=$limit$profileQuery") ?: return emptyList()
+        // `order=recent` keeps a running session on page one: the default sorts by
+        // creation, so the activity poll would look at the oldest sessions first.
+        val orderQuery = order?.let { "&order=$it" } ?: ""
+        val response = get("/api/sessions?limit=$limit$profileQuery$orderQuery") ?: return emptyList()
         val root = runCatching { JSONObject(response) }.getOrNull() ?: return emptyList()
         val arr = root.optJSONArray("sessions") ?: root.optJSONArray("data") ?: return emptyList()
         val out = mutableListOf<Session>()
@@ -468,6 +471,19 @@ class ApiClient private constructor(context: Context) {
     fun modelInfo(): JSONObject? = get("/api/model/info")?.let {
         runCatching { JSONObject(it) }.getOrNull()
     }
+
+    /**
+     * Whether the gateway has anything running at all — 2 KB, versus 115 KB for a
+     * session page.
+     *
+     * The session list is the only place that says *which* session is running, so
+     * the list screen polls this cheap flag first and only fetches sessions while
+     * something is actually active. Without the gate, keeping the pulse live would
+     * mean pulling the whole listing every few seconds forever.
+     */
+    fun gatewayBusy(): Boolean = get("/api/status")?.let { raw ->
+        runCatching { JSONObject(raw).optBoolean("gateway_busy", false) }.getOrDefault(false)
+    } ?: false
 
     // ── Messages (REST) ──────────────────────────────────────────────────────
 

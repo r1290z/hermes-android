@@ -18,6 +18,9 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -46,6 +49,9 @@ class MainActivity : Activity() {
     private lateinit var statusBar: StatusBar
     private val ui = Handler(Looper.getMainLooper())
     private var loading = false
+    /** Live refresh of running / unread state while this screen is visible. */
+    private var pollJob: Job? = null
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -115,14 +121,16 @@ class MainActivity : Activity() {
             return
         }
         // Coming back from a chat: the title or the last-active time changed.
+        // The marks for that session are applied inside load().
         if (!loading && all.isNotEmpty()) load(force = true)
         if (::statusBar.isInitialized) statusBar.start()
+        startActivityPoll()
     }
 
     override fun onPause() {
         super.onPause()
-        // The strip polls every 20 s; no reason to keep the radio busy behind
-        // another screen.
+        // Nothing on this screen is visible any more: stop both polls.
+        stopActivityPoll()
         if (::statusBar.isInitialized) statusBar.stop()
     }
 
@@ -143,10 +151,75 @@ class MainActivity : Activity() {
                 finish()
                 return@launch
             }
+            // Marks are applied here, not on the server: its `unread` column is
+            // never set true on this gateway, so the count-based marker is what
+            // actually produces a dot (see ReadMarks).
+            val openedSince = ReadMarks.takePending(this@MainActivity)
+            val runningLocally = Running.active(this@MainActivity)
+            for (s in sessions) {
+                if (s.id == openedSince) {
+                    ReadMarks.markRead(this@MainActivity, s.id, s.messageCount)
+                }
+                s.unread = ReadMarks.isUnread(this@MainActivity, s)
+                if (runningLocally.contains(s.id)) s.running = true
+            }
             all.clear()
             all.addAll(sessions)
             applyFilter()
         }
+    }
+
+    /**
+     * Keeps the list live while it is on screen: which session is working, and
+     * which ones answered unseen.
+     *
+     * `/api/status` is 2 KB and answers "is anything running at all"; the session
+     * page is 115 KB, so it is only fetched while something IS running. Polling the
+     * page unconditionally would move tens of megabytes an hour for a pulse.
+     */
+    private fun startActivityPoll() {
+        pollJob?.cancel()
+        pollJob = scope.launch {
+            while (isActive) {
+                delay(POLL_MS)
+                if (loading) continue
+                val busy = withContext(Dispatchers.IO) { api.gatewayBusy() }
+                val localRunning = Running.active(this@MainActivity)
+                if (!busy && localRunning.isEmpty()) {
+                    if (all.any { it.running }) {
+                        all.forEach { it.running = false }
+                        applyFilter()
+                    }
+                    continue
+                }
+                val fresh = withContext(Dispatchers.IO) { api.sessions(limit = 20, order = "recent") }
+                if (fresh.isEmpty()) continue
+                val byId = fresh.associateBy { it.id }
+                var changed = false
+                for (s in all) {
+                    val f = byId[s.id]
+                    val runningNow = (f?.running ?: s.running) || localRunning.contains(s.id)
+                    if (f != null && f.messageCount != s.messageCount) {
+                        s.messageCount = f.messageCount
+                        // New messages arrived while the list was open: recompute
+                        // the dot instead of waiting for the next full reload.
+                        s.unread = ReadMarks.isUnread(this@MainActivity, s)
+                        changed = true
+                    }
+                    if (s.running != runningNow) {
+                        s.running = runningNow
+                        s.activity = if (runningNow) (f?.activity ?: "") else ""
+                        changed = true
+                    }
+                }
+                if (changed) applyFilter()
+            }
+        }
+    }
+
+    private fun stopActivityPoll() {
+        pollJob?.cancel()
+        pollJob = null
     }
 
     private fun applyFilter() {
@@ -167,10 +240,13 @@ class MainActivity : Activity() {
         session?.let {
             intent.putExtra(ChatActivity.EXTRA_SESSION_ID, it.id)
             intent.putExtra(ChatActivity.EXTRA_SESSION_TITLE, it.title)
+            ReadMarks.markRead(this, it.id, it.messageCount)
             if (it.unread) {
-                // Optimistic clear: the dot must not survive the tap; if the
-                // fenced PATCH fails the next listing puts it back.
+                // Optimistic clear: the dot must not survive the tap.
                 it.unread = false
+                // The server's own flag is still PATCHed — other clients read it —
+                // but the dot here is driven by ReadMarks, because on this gateway
+                // `unread` never comes back true.
                 scope.launch { withContext(Dispatchers.IO) { api.markRead(it.id) } }
             }
         }
@@ -659,6 +735,8 @@ class MainActivity : Activity() {
 
     companion object {
         private const val NOTIFICATION_PERMISSION_REQUEST = 1002
+        /** Cheap flag first, session page only while something runs. */
+        private const val POLL_MS = 6_000L
         private const val IME_ACTION_SEARCH = EditorInfo.IME_ACTION_SEARCH
 
         /** Kept for the notification tap intent: opening a session from the

@@ -9,14 +9,29 @@
     android:paddingEnd="16dp"
     android:paddingBottom="10dp">
 
-    <View
-        android:id="@+id/unreadDot"
-        android:layout_width="8dp"
-        android:layout_height="8dp"
+    <!-- Leading marker slot: one of the two is visible, never both. The pulse
+         means "working right now", the dot means "answered and unseen". -->
+    <FrameLayout
+        android:id="@+id/dotSlot"
+        android:layout_width="18dp"
+        android:layout_height="18dp"
         android:layout_gravity="center_vertical"
-        android:layout_marginEnd="8dp"
-        android:background="@drawable/bg_unread_dot"
-        android:visibility="gone" />
+        android:layout_marginEnd="6dp">
+
+        <View
+            android:id="@+id/unreadDot"
+            android:layout_width="8dp"
+            android:layout_height="8dp"
+            android:layout_gravity="center"
+            android:background="@drawable/bg_unread_dot"
+            android:visibility="gone" />
+
+        <ru.evgen.hermes.PulseDot
+            android:id="@+id/workingDot"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone" />
+    </FrameLayout>
 
     <LinearLayout
         android:layout_width="0dp"

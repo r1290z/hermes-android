@@ -811,6 +811,7 @@ class ChatActivity : Activity() {
         // this process, and without a foreground service Android is free to freeze
         // it the moment the chat is not visible.
         TurnWatchService.start(this, id, title.text.toString())
+        Running.started(this, id)
         sawDeltaThisTurn = false
         baselineText = null
         // A stale index would repaint a row from the previous turn instead of the
@@ -1026,6 +1027,7 @@ class ChatActivity : Activity() {
                 // The turn is over, so the protection is no longer needed and the
                 // card it holds is replaced by the answer notification below.
                 TurnWatchService.stop(this)
+                sessionId?.let { Running.finished(this, it) }
                 fallbackJob?.cancel()
                 runId = null
                 updateSendState()
@@ -1088,6 +1090,7 @@ class ChatActivity : Activity() {
         streamJob?.cancel()
         streaming = false
         TurnWatchService.stop(this)
+        sessionId?.let { Running.finished(this, it) }
         updateSendState()
         // The turn lives on the server, not in this coroutine: cancelling the
         // job only stops listening, so the run has to be interrupted too.
@@ -1355,6 +1358,9 @@ class ChatActivity : Activity() {
     override fun onResume() {
         super.onResume()
         resumed = true
+        // The list owns the message count; this just says "this one was on
+        // screen", so the next listing can mark it read.
+        sessionId?.let { ReadMarks.noteOpened(this, it) }
         // Requests answered from the shade while the process was alive but the
         // screen closed: their cards are stale, resolve them quietly.
         for ((requestId, choice) in pendingAnswered) {
@@ -1368,6 +1374,8 @@ class ChatActivity : Activity() {
     override fun onPause() {
         super.onPause()
         resumed = false
+        // Leaving: whatever was written while the chat was open has been seen.
+        sessionId?.let { ReadMarks.noteOpened(this, it) }
         saveDraft()
         if (streaming) {
             Notifications.showWorking(

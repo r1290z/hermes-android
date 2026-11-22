@@ -99,13 +99,18 @@ class SessionAdapter(
         private val time: TextView = view.findViewById(R.id.time)
         private val pin: TextView = view.findViewById(R.id.pin)
         private val unreadDot: View = view.findViewById(R.id.unreadDot)
+        private val workingDot: PulseDot = view.findViewById(R.id.workingDot)
 
         fun bind(session: Session) {
             title.text = session.title
             meta.text = metaLine(session)
             time.text = relative(session.lastActive)
             pin.visibility = if (session.pinned) View.VISIBLE else View.GONE
-            unreadDot.visibility = if (session.unread) View.VISIBLE else View.GONE
+            // Two different states, never both: a session that is working has not
+            // "answered and been missed", and the pulse would be lost under a dot.
+            unreadDot.visibility = if (session.unread && !session.running) View.VISIBLE else View.GONE
+            workingDot.visibility = if (session.running) View.VISIBLE else View.GONE
+            if (session.running) workingDot.start() else workingDot.stop()
             itemView.setOnClickListener { onOpen(session) }
             itemView.setOnLongClickListener { v ->
                 onLongPress(session, v)
@@ -115,6 +120,12 @@ class SessionAdapter(
     }
 
     private fun metaLine(session: Session): String {
+        // While a turn runs, "what is happening" beats "what we said last": the
+        // row already carries the title, and the preview is stale by definition.
+        if (session.running) {
+            val what = activityLabel(session.activity)
+            return if (session.model.isNotEmpty()) "$what · ${session.model}" else what
+        }
         val parts = mutableListOf<String>()
         if (session.messageCount > 0) parts += "${session.messageCount} сообщ."
         if (session.model.isNotEmpty()) parts += session.model
@@ -124,6 +135,21 @@ class SessionAdapter(
             parts.dropLast(1).joinToString(" · ") + "\n" + preview
         } else {
             parts.joinToString(" · ")
+        }
+    }
+
+    /** The agent's own words for what it is doing, in Russian, falling back to a
+     *  generic label rather than showing an untranslated English stamp. */
+    private fun activityLabel(raw: String): String {
+        val a = raw.lowercase()
+        return when {
+            a.contains("stream") -> "пишет ответ"
+            a.contains("thinking") || a.contains("reasoning") -> "думает"
+            a.contains("tool") -> "выполняет инструмент"
+            a.contains("compress") -> "сжимает контекст"
+            a.contains("waiting") -> "ждёт"
+            a.isBlank() -> "работает"
+            else -> "работает"
         }
     }
 

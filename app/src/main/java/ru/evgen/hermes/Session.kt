@@ -12,7 +12,9 @@ data class Session(
     val lastActive: Long,
     val pinned: Boolean,
     val archived: Boolean,
-    val messageCount: Int,
+    /** `var`: the list updates it from the activity poll so the unread dot can
+     *  appear without a full reload. */
+    var messageCount: Int,
     val model: String,
     val source: String,
     /** The sidebar dot: the server tracks it per session; the app clears it
@@ -20,6 +22,13 @@ data class Session(
      *  for the optimistic clear on tap — a failed PATCH is corrected by the
      *  next listing. */
     var unread: Boolean = false,
+    /** A turn is running in this session right now. Taken from the server's
+     *  `is_active` + a fresh `last_activity_description`, or from the local
+     *  registry for turns this phone started. */
+    var running: Boolean = false,
+    /** What the agent says it is doing ("receiving stream response"), shown as
+     *  the second line while [running]; empty otherwise. */
+    var activity: String = "",
     /** Prompt tokens the last turn carried — what the status strip shows as
      *  "context used". Absent on a session that never ran a turn. */
     val inputTokens: Long = 0
@@ -49,6 +58,16 @@ data class Session(
 
             val last = json.optDouble("last_active", 0.0)
             val started = json.optDouble("started_at", 0.0)
+            // A running turn is: the session has not ended, the agent stamped what
+            // it is doing, and that stamp is recent. `is_active` alone is useless
+            // here — the server counts a session as active for five minutes after
+            // its last message, so every chat used in the last five minutes would
+            // pulse.
+            val activity = if (json.isNull("last_activity_description")) ""
+            else json.optString("last_activity_description").trim()
+            val activityAt = json.optDouble("last_activity_at", 0.0)
+            val fresh = activityAt > 0 && System.currentTimeMillis() / 1000.0 - activityAt < 120
+            val running = json.optBoolean("is_active", false) && activity.isNotEmpty() && fresh
             return Session(
                 id = id,
                 title = title,
@@ -62,6 +81,8 @@ data class Session(
                 model = json.optString("model").substringAfter('/'),
                 source = json.optString("source"),
                 unread = json.optBoolean("unread", false),
+                running = running,
+                activity = if (running) activity else "",
                 inputTokens = json.optLong("input_tokens", 0L)
             )
         }

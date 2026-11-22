@@ -100,8 +100,14 @@ def collect_layouts():
 
 
 DECL = re.compile(r"(?:lateinit\s+var|var|val)\s+(\w+)\s*:\s*([A-Za-z_][\w.]*)")
-FIND_SINGLE = re.compile(r"findViewById\s*<\s*([A-Za-z_][\w.]*)\s*>\s*\(\s*R\.id\.(\w+)\s*\)")
-ASSIGN = re.compile(r"(\w+)\s*=\s*findViewById\s*(?:<\s*([A-Za-z_][\w.]*)\s*>)?\s*\(\s*R\.id\.(\w+)\s*\)")
+# Optional receiver: adapters call `view.findViewById(...)`, activities call it bare.
+# Without the receiver group every id used inside a ViewHolder was invisible here —
+# reported as unused AND, worse, never type-checked against its layout.
+FIND_SINGLE = re.compile(r"(?:\w+\.)?findViewById\s*<\s*([A-Za-z_][\w.]*)\s*>\s*\(\s*R\.id\.(\w+)\s*\)")
+ASSIGN = re.compile(
+    r"(\w+)\s*(?::\s*([A-Za-z_][\w.]*))?\s*=\s*(?:\w+\.)?findViewById\s*"
+    r"(?:<\s*([A-Za-z_][\w.]*)\s*>)?\s*\(\s*R\.id\.(\w+)\s*\)"
+)
 
 # Widget class -> Kotlin type: equal names, plus the ones that legitimately differ.
 ALIASES = {
@@ -155,8 +161,10 @@ def main() -> int:
                 )
 
         for m in ASSIGN.finditer(text):
-            var, typ, ident = m.group(1), m.group(2), m.group(3)
-            typ = typ or declared.get(var) or "View"
+            var, annotated, generic, ident = m.group(1), m.group(2), m.group(3), m.group(4)
+            # The declared type right at the assignment (`val x: TextView = …`) is
+            # the most precise source; the class-level declaration is the fallback.
+            typ = annotated or generic or declared.get(var) or "View"
             used.add(ident)
             if ident not in ids:
                 problems.append(f"{rel}: {var} = findViewById(R.id.{ident}) — нет такого id ни в одном layout")
