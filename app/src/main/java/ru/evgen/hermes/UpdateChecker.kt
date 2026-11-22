@@ -54,23 +54,17 @@ object UpdateChecker {
 
     private var receiver: BroadcastReceiver? = null
 
-    /** Reads `/version.json` through the app's own HTTP client, so the request
-     *  carries the login like every other call. */
-    fun fetch(base: String): Info? {
-        val client = okhttp3.OkHttpClient.Builder()
-            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
-            .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-            .build()
-        val request = okhttp3.Request.Builder()
-            .url("$base/version.json?ts=" + System.currentTimeMillis())
-            .build()
-        return try {
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) null else Info.parse(response.body?.string())
-            }
-        } catch (e: Exception) {
-            null
-        }
+    /**
+     * Reads `/version.json` **through the logged-in client**.
+     *
+     * It used to build its own bare OkHttpClient — no cookie jar — so the request
+     * arrived unauthenticated, the server answered 302 to /login and the app said
+     * "Не удалось проверить обновления" forever. The status code comes back with
+     * the result so the message can say which of the two it was.
+     */
+    fun fetch(api: ApiClient): Pair<Info?, Int> {
+        val (code, body) = api.getWithStatus("/version.json?ts=" + System.currentTimeMillis())
+        return Info.parse(body) to code
     }
 
     fun offer(activity: Activity, info: Info, currentVersionCode: Int) {
@@ -112,7 +106,13 @@ object UpdateChecker {
                 setMimeType("application/vnd.android.package-archive")
                 setTitle("Hermes ${info.versionName}")
                 setDescription("Обновление приложения")
-                CookieManager.getInstance().getCookie(url)?.let { addRequestHeader("Cookie", it) }
+                // Both cookie sources: WebView's (what DownloadManager shares) and
+                // ours from the OkHttp jar — the APK is behind the login, and
+                // without it the "download" is a saved login page.
+                val jar = ApiClient.get(activity).cookieHeader(url)
+                val web = CookieManager.getInstance().getCookie(url)
+                val cookie = listOfNotNull(jar, web).distinct().joinToString("; ")
+                if (cookie.isNotBlank()) addRequestHeader("Cookie", cookie)
                 setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
             }
@@ -136,6 +136,23 @@ object UpdateChecker {
                 unregister(ctx)
                 val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
                 val uri = dm.getUriForDownloadedFile(downloadId) ?: return
+                // A 302 to /login still produces a "successful" download: an HTML
+                // page saved as .apk. Installing it fails with a parse error that
+                // reads like a Shizuku problem. Check the bytes first.
+                val file = java.io.File(path)
+                val looksApk = try {
+                    file.inputStream().use { s ->
+                        val head = ByteArray(2)
+                        s.read(head) == 2 && head[0] == 'P'.code.toByte() && head[1] == 'K'.code.toByte()
+                    }
+                } catch (e: Exception) {
+                    false
+                }
+                if (!file.exists() || file.length() < 500_000 || !looksApk) {
+                    Diag.log("update", "скачанное не APK: ${file.length()} байт")
+                    toast(activity, "Скачался не APK — проверь вход на сервере")
+                    return
+                }
                 installFlow(activity, info, uri, path)
             }
         }

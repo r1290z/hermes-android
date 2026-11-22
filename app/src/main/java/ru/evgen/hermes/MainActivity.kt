@@ -550,12 +550,27 @@ class MainActivity : Activity() {
 
     private fun checkForUpdates(manual: Boolean) {
         scope.launch {
-            val info = withContext(Dispatchers.IO) { UpdateChecker.fetch(api.base) }
-            if (info == null) {
-                if (manual) Toast.makeText(this@MainActivity, "Не удалось проверить обновления", Toast.LENGTH_SHORT).show()
-                return@launch
+            val (info, code) = withContext(Dispatchers.IO) { UpdateChecker.fetch(api) }
+            when {
+                info != null -> UpdateChecker.offer(this@MainActivity, info, currentVersion())
+                !manual -> Unit
+                // Say which failure it was. "Не удалось проверить" covered an
+                // expired session, a 302 to /login and a dead network alike.
+                code == 302 || code == 401 || code == 403 -> AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Проверка обновлений")
+                    .setMessage("Сервер не пустил: код $code, сеанс истёк.\n\nВыйди и войди заново — тогда проверка заработает.")
+                    .setPositiveButton("Выйти") { _, _ -> askLogout() }
+                    .setNegativeButton("Закрыть", null)
+                    .show()
+                code <= 0 -> Toast.makeText(
+                    this@MainActivity, "Нет связи с сервером (${api.base})", Toast.LENGTH_LONG
+                ).show()
+                else -> AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Проверка обновлений")
+                    .setMessage("Сервер ответил кодом $code, разобрать version.json не удалось.")
+                    .setNegativeButton("Закрыть", null)
+                    .show()
             }
-            UpdateChecker.offer(this@MainActivity, info, currentVersion())
         }
     }
 

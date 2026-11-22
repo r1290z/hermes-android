@@ -1234,8 +1234,12 @@ class ApiClient private constructor(context: Context) {
         execute(Request.Builder().url(base + path).get().build())
 
     /** Same as get(), but reports the HTTP code (or -1 on IOException) so the
-     *  archive can tell an auth failure (302/401) from no connectivity. */
-    private fun getWithStatus(path: String): Pair<Int, String?> = try {
+     *  archive can tell an auth failure (302/401) from no connectivity.
+     *
+     *  Public because the update check needs the same distinction: `version.json`
+     *  sits behind the login, and "Не удалось проверить обновления" covered both
+     *  an expired session and a dead network. */
+    fun getWithStatus(path: String): Pair<Int, String?> = try {
         client.newCall(Request.Builder().url(base + path).get().build()).execute().use { r ->
             when {
                 r.isSuccessful -> r.code to r.body?.string()
@@ -1244,6 +1248,20 @@ class ApiClient private constructor(context: Context) {
         }
     } catch (e: IOException) {
         -1 to null
+    }
+
+    /**
+     * The Cookie header for [url], ready to be handed to DownloadManager.
+     *
+     * DownloadManager has its own cookie handling (WebView's CookieManager) and
+     * knows nothing about our OkHttp jar — so a download of the APK went out
+     * unauthenticated, got a 302 to /login and saved an HTML page as .apk.
+     */
+    fun cookieHeader(url: String): String? {
+        val http = HttpUrl.parse(url) ?: return null
+        val cookies = cookieJar.loadForRequest(http)
+        if (cookies.isEmpty()) return null
+        return cookies.joinToString("; ") { it.name + "=" + it.value }
     }
 
     private fun execute(request: Request): String? = try {
