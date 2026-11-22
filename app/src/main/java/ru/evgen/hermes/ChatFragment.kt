@@ -61,6 +61,12 @@ class ChatFragment : Fragment() {
     private lateinit var api: ApiClient
     private lateinit var list: RecyclerView
     private lateinit var input: EditText
+    /** Slash palette: the gateway's command catalog, filtered as the user types. */
+    private var slashList: RecyclerView? = null
+    private var slashAdapter: SlashAdapter? = null
+    private var slashJob: Job? = null
+    /** Rows visible in the palette at once. */
+    private val slashRows = 6
     private lateinit var send: ImageButton
     private lateinit var steer: ImageButton
     private lateinit var title: TextView
@@ -299,7 +305,10 @@ class ChatFragment : Fragment() {
         mic.setOnClickListener { startSpeech() }
 
         input.addTextChangedListener(object : TextWatcher {
-            override fun afterTextChanged(s: Editable?) = updateSendState()
+            override fun afterTextChanged(s: Editable?) {
+                updateSendState()
+                onComposerChanged(s?.toString() ?: "")
+            }
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
         })
@@ -308,6 +317,7 @@ class ChatFragment : Fragment() {
             loadHistory()
             startLive(sessionId!!)
         }
+        setupSlashPalette()
         restoreDraft()
         updateSendState()
         renderEmptyState()
@@ -873,6 +883,127 @@ class ChatFragment : Fragment() {
             .show()
     }
 
+    // ── Slash commands ────────────────────────────────────────────────────────
+
+    /**
+     * Shows the command palette while the field holds a bare `/word`.
+     *
+     * The catalog is fetched from the gateway on every keystroke (debounced), because
+     * it is the server that knows about skills and plugin commands — a cached list
+     * would go stale the moment a skill is installed.
+     */
+    private fun onComposerChanged(text: String) {
+        val list = slashList ?: return
+        val query = Slash.paletteQuery(text)
+        if (query == null) {
+            list.visibility = View.GONE
+            slashJob?.cancel()
+            return
+        }
+        slashJob?.cancel()
+        slashJob = scope.launch {
+            delay(150) // one keystroke burst, one request
+            val id = sessionId ?: return@launch
+            val items = withContext(Dispatchers.IO) { api.completeSlash(id, query) }
+            if (!isAdded) return@launch
+            if (items.isEmpty()) {
+                list.visibility = View.GONE
+                return@launch
+            }
+            // Built-ins first: a skill named like a command would otherwise bury it.
+            // Capped: the palette is a shortcut, and a 140-row list over the keyboard
+            // is a menu you have to scroll before you can type.
+            val ordered = items.sortedBy { if (it.kind == "command") 0 else 1 }
+                .take(slashRows)
+            slashAdapter?.submit(ordered)
+            list.visibility = View.VISIBLE
+        }
+    }
+
+    /** Runs a command typed by hand: local ones in the app, the rest on the server. */
+    private fun runSlash(raw: String) {
+        val parsed = Slash.parse(raw) ?: return
+        hideSlashPalette()
+        when {
+            parsed.name == Slash.NEW || parsed.name == Slash.RESET -> {
+                input.setText("")
+                clearDraft()
+                hideKeyboard()
+                startNewSession()
+                addNote(getString(R.string.slash_new_note))
+            }
+            parsed.name == Slash.CLEAR -> {
+                input.setText("")
+                clearDraft()
+                hideSlashPalette()
+            }
+            // While a turn runs, `/stop` means the turn — see Slash.kt. Without a
+            // turn it goes to the server, where it means "kill background processes".
+            parsed.name == Slash.STOP && streaming -> {
+                input.setText("")
+                clearDraft()
+                stopTurn()
+                addNote(getString(R.string.slash_stop_turn_note))
+            }
+            else -> execRemote(raw)
+        }
+    }
+
+    /** Sends the command to the gateway and shows its answer as a console line. */
+    private fun execRemote(command: String) {
+        val id = sessionId
+        if (id == null) {
+            Toast.makeText(context, R.string.slash_no_session, Toast.LENGTH_SHORT).show()
+            return
+        }
+        input.setText("")
+        clearDraft()
+        hideKeyboard()
+        val key = addNote(getString(R.string.slash_running, command))
+        scrollToEnd()
+        scope.launch {
+            val output = withContext(Dispatchers.IO) { api.slashExec(id, command) }
+            if (!isAdded) return@launch
+            val text = output ?: api.error ?: getString(R.string.slash_failed)
+            adapter?.replaceNote(key, text)
+            scrollToEnd()
+            // Some commands change what the transcript should show (a compaction, a
+            // rollback). Re-reading is cheap and beats a stale view.
+            if (Slash.refreshesHistory(command)) loadHistory()
+        }
+    }
+
+    /** Appends a console line and returns its key, so a pending line can be
+     *  replaced in place once the answer arrives. */
+    private fun addNote(text: String): String = adapter?.addNote(text) ?: ""
+
+    private fun hideSlashPalette() {
+        slashJob?.cancel()
+        slashList?.visibility = View.GONE
+    }
+
+    private fun setupSlashPalette() {
+        val list = view?.findViewById<RecyclerView>(R.id.slashList) ?: return
+        val adapter = SlashAdapter { item -> pickSlash(item) }
+        list.layoutManager = LinearLayoutManager(requireContext())
+        list.adapter = adapter
+        slashList = list
+        slashAdapter = adapter
+    }
+
+    /** Tap on a palette row: fill the field when the command wants arguments,
+     *  run it straight away when it does not. */
+    private fun pickSlash(item: SlashItem) {
+        val command = "/" + item.text
+        if (Slash.takesArgs(item)) {
+            input.setText("$command ")
+            input.setSelection(input.text.length)
+            hideSlashPalette()
+        } else {
+            runSlash(command)
+        }
+    }
+
     /**
      * Opens a file the agent handed over.
      *
@@ -988,6 +1119,12 @@ class ChatFragment : Fragment() {
 
     private fun submit() {
         val text = input.text.toString().trim()
+        // A slash command is not a prompt: it must not reach the agent as text, and
+        // it must not consume a staged attachment.
+        if (text.startsWith("/") && Slash.parse(text) != null) {
+            runSlash(text)
+            return
+        }
         if (streaming) return
         if (text.isEmpty() && pendingImage == null && pendingFile == null) return
         input.setText("")

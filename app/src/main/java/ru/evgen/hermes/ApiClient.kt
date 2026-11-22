@@ -490,6 +490,44 @@ class ApiClient private constructor(context: Context) {
     }
 
     /**
+     * The live slash catalog for a session: `/command` rows plus skills and plugin
+     * commands, each with the server's own description. Never hardcoded on the phone
+     * — the catalog is 140 rows and grows with every skill installed.
+     */
+    fun completeSlash(sessionId: String, text: String): List<SlashItem> {
+        val params = JSONObject()
+            .put("text", text)
+            .put("session_id", sessionId)
+        val result = rpc("complete.slash", params, 8000) ?: return emptyList()
+        val items = result.optJSONArray("items") ?: return emptyList()
+        val out = ArrayList<SlashItem>(items.length())
+        for (i in 0 until items.length()) {
+            val o = items.optJSONObject(i) ?: continue
+            val text = o.optString("text")
+            if (text.isEmpty()) continue
+            out += SlashItem(
+                text = text,
+                meta = o.optString("meta"),
+                kind = o.optString("kind")
+            )
+        }
+        return out
+    }
+
+    /**
+     * Runs a slash command against the session. The reply is the command's own text
+     * (`{"type":"exec","output":"…"}`), not a model answer — so it must be shown as a
+     * system line in the transcript, never appended to the conversation.
+     */
+    fun slashExec(sessionId: String, command: String): String? {
+        val params = JSONObject()
+            .put("session_id", sessionId)
+            .put("command", command)
+        val result = rpc("slash.exec", params, 120000) ?: return null
+        return result.optString("output").ifEmpty { result.optString("message") }.ifEmpty { null }
+    }
+
+    /**
      * Whether the gateway has anything running at all — 2 KB, versus 115 KB for a
      * session page.
      *

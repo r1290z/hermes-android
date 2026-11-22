@@ -114,6 +114,13 @@ class ChatAdapter(
             var state: String,
             override val time: Long = 0
         ) : Row()
+        /** Output of a slash command: the gateway's own text, shown as a console
+         *  line and never appended to the conversation. */
+        data class Note(
+            override val key: String,
+            val text: String,
+            override val time: Long = 0
+        ) : Row()
         /** A pending clarify/approval card. Lives in the transcript until the
          *  user answers or the server retracts it (`request.cancel`). */
         data class Question(
@@ -342,6 +349,7 @@ class ChatAdapter(
         is Row.Compacted -> TYPE_COMPACTED
         is Row.Older -> TYPE_OLDER
         is Row.Steer -> TYPE_STEER
+        is Row.Note -> TYPE_NOTE
         else -> TYPE_ASSISTANT
     }
 
@@ -354,6 +362,7 @@ class ChatAdapter(
             TYPE_COMPACTED -> CompactedHolder(inflater.inflate(R.layout.block_text, parent, false))
             TYPE_OLDER -> OlderHolder(inflater.inflate(R.layout.item_chat_older, parent, false))
             TYPE_STEER -> SteerHolder(inflater.inflate(R.layout.item_chat_steer, parent, false))
+            TYPE_NOTE -> NoteHolder(inflater.inflate(R.layout.item_chat_note, parent, false))
             else -> AssistantHolder(inflater.inflate(R.layout.item_chat_assistant, parent, false))
         }
     }
@@ -366,6 +375,7 @@ class ChatAdapter(
             is Row.Compacted -> (holder as CompactedHolder).bind(row)
             is Row.Older -> (holder as OlderHolder).bind(row)
             is Row.Steer -> (holder as SteerHolder).bind(row)
+            is Row.Note -> (holder as NoteHolder).bind(row)
             is Row.Assistant -> (holder as AssistantHolder).bind(row)
         }
     }
@@ -405,6 +415,28 @@ class ChatAdapter(
 
     /** The grey "→ в поток" line: steering text is part of the running turn, so
      *  it reads as an annotation, not another message. */
+    /** Appends a slash command's answer at the end of the transcript. Returns the
+     *  row key so the caller can replace the "running…" line with the real answer. */
+    fun addNote(text: String): String {
+        val key = "note-" + ++seq
+        rows.add(Row.Note(key, text))
+        notifyItemInserted(rows.size - 1)
+        return key
+    }
+
+    /** Rewrites an existing note in place (a command that answered slowly). */
+    fun replaceNote(key: String, text: String) {
+        val i = rows.indexOfFirst { it is Row.Note && it.key == key }
+        if (i < 0) return
+        rows[i] = Row.Note(key, text)
+        notifyItemChanged(i)
+    }
+
+    private inner class NoteHolder(view: View) : RecyclerView.ViewHolder(view) {
+        private val note: TextView = view.findViewById(R.id.note)
+        fun bind(row: Row.Note) { note.text = row.text }
+    }
+
     private inner class SteerHolder(view: View) : RecyclerView.ViewHolder(view) {
         private val text: TextView = view.findViewById<TextView>(R.id.text)
         private val note: TextView = view.findViewById<TextView>(R.id.note)
@@ -758,6 +790,7 @@ class ChatAdapter(
         private const val TYPE_COMPACTED = 4
         private const val TYPE_OLDER = 5
         private const val TYPE_STEER = 6
+        private const val TYPE_NOTE = 7
 
         /** Characters of tool output kept in the collapsed row. */
         private const val TOOL_BODY_LIMIT = 1500

@@ -162,4 +162,9 @@
     <string name="attachment_tap_hint">%1$s · нажми, чтобы скачать</string>
     <string name="attachment_downloading">Скачиваю %1$s…</string>
     <string name="attachment_failed">Не удалось получить файл с сервера</string>
+    <string name="slash_running">/%1$s выполняется…</string>
+    <string name="slash_failed">Команда не выполнилась</string>
+    <string name="slash_no_session">Командам нужен открытый сеанс</string>
+    <string name="slash_new_note">Новый сеанс</string>
+    <string name="slash_stop_turn_note">Ход остановлен</string>
 </resources>

@@ -242,6 +242,17 @@
             android:tint="@color/text_primary" />
     </FrameLayout>
 
+    <!-- Slash palette: appears while the field holds a bare `/word` and the catalog
+         has a match. Sits right above the composer so the thumb does not travel. -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/slashList"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/card_bg"
+        android:paddingTop="4dp"
+        android:paddingBottom="4dp"
+        android:visibility="gone" />
+
     <!-- Composer: field + send. The send button is always there (grey when the
          field is empty) instead of appearing on the first keystroke — a control
          that appears is a control the thumb has to hunt for. -->
