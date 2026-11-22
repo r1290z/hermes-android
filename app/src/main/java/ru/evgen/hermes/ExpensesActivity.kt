@@ -38,6 +38,7 @@ class ExpensesActivity : Activity() {
     private lateinit var cacheNote: TextView
     private lateinit var status: TextView
     private lateinit var chart: DailyChart
+    private lateinit var chartNote: TextView
     private lateinit var models: LinearLayout
     private lateinit var periods: LinearLayout
 
@@ -62,6 +63,7 @@ class ExpensesActivity : Activity() {
         cacheNote = findViewById(R.id.cacheNote)
         status = findViewById(R.id.status)
         chart = findViewById(R.id.chart)
+        chartNote = findViewById(R.id.chartNote)
         models = findViewById(R.id.models)
         periods = findViewById(R.id.periods)
         findViewById<ImageButton>(R.id.btnBack).setOnClickListener { finish() }
@@ -72,7 +74,7 @@ class ExpensesActivity : Activity() {
 
     private fun renderPeriods() {
         periods.removeAllViews()
-        val options = listOf(1 to "Сегодня", 7 to "7 дней", 30 to "30 дней")
+        val options = listOf(7 to "7 дней", 30 to "30 дней", 90 to "90 дней")
         for ((value, label) in options) {
             val chip = TextView(this)
             chip.text = label
@@ -153,6 +155,9 @@ class ExpensesActivity : Activity() {
             append("$calls запросов к модели")
             if (sessions > 0) append(" · до $sessions сеансов в день")
             if (messages > 0) append(" · ${priced.sumOf { it.first.toolCalls }} вызовов инструментов")
+            // Average per day, not "today": the gateway has no per-day ledger, and a
+            // fabricated daily figure would be the one number a user acts on.
+            if (days > 0) append("\nв среднем ${Prices.money(periodCost / days)} в день")
         }
 
         val inTokens = daily.sumOf { it.inputTokens }
@@ -177,6 +182,15 @@ class ExpensesActivity : Activity() {
 
         val periodTokens = byModel.sumOf { it.inputTokens + it.outputTokens + it.cacheReadTokens }
         chart.submit(daily.map { it.day to costOfDay(it, periodCost, periodTokens) })
+        // The honesty note: the gateway's daily series groups sessions by the day
+        // they STARTED and counts the whole session there. A chart presented as
+        // "spend per day" would then claim a long chat cost nothing on the days it
+        // actually ran — so the chart says what its buckets really are.
+        chartNote.text = String.format(
+            Locale("ru"),
+            "Столбик — день начала сеансов: сеанс целиком считается в свой первый день, "
+                + "поэтому длинный чат может выглядеть как один дорогой день и тихие следующие."
+        )
 
         models.removeAllViews()
         if (priced.isEmpty()) {
