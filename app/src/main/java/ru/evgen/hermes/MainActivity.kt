@@ -348,6 +348,7 @@ class MainActivity : Activity() {
                 "Проверить обновление",
                 "Shizuku: $shizuku",
                 "Фоновая работа",
+                "Проверка установки",
                 "Лог и падения",
                 getString(R.string.logout)
             )) { _, which ->
@@ -356,7 +357,8 @@ class MainActivity : Activity() {
                     1 -> checkForUpdates(manual = true)
                     2 -> explainShizuku()
                     3 -> checkBackgroundWork()
-                    4 -> showLog()
+                    4 -> checkInstallVerification()
+                    5 -> showLog()
                     else -> askLogout()
                 }
             }
@@ -476,8 +478,53 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * Play Protect's install-time verifier is what puts "Установить всё равно?"
+     * in front of every update: our APK is signed with our own key, so Google has
+     * never seen it and the verifier always has something to say.
+     *
+     * The system's own settings are shown first (not our guess), then can be
+     * switched — `verifier_verify_adb_installs` is the one the update flow uses,
+     * `package_verifier_enable` covers installs from the file manager too.
+     */
+    private fun checkInstallVerification() {
+        if (ShizukuInstall.state(this) != ShizukuInstall.State.READY) {
+            AlertDialog.Builder(this)
+                .setTitle("Проверка установки")
+                .setMessage(
+                    "Нужен Shizuku с выданным доступом — только у него есть право менять эти " +
+                        "настройки.\n\nСейчас: " + ShizukuInstall.describe(this)
+                )
+                .setNegativeButton("Закрыть", null)
+                .show()
+            return
+        }
+        ShizukuInstall.verifierState(this) { state ->
+            AlertDialog.Builder(this)
+                .setTitle("Проверка установки")
+                .setMessage(
+                    "Система отвечает:\n$state\n\n" +
+                        "0 — проверка выключена, 1 — включена.\n\n" +
+                        "Обновления ставятся через shell, поэтому проверку shell-установок " +
+                        "приложение выключает само перед каждой установкой. Остальные значения " +
+                        "можно переключить здесь."
+                )
+                .setPositiveButton("Выключить везде") { _, _ -> setVerifier("all", false) }
+                .setNeutralButton("Включить обратно") { _, _ -> setVerifier("adb", true) }
+                .setNegativeButton("Закрыть", null)
+                .show()
+        }
+    }
+
+    private fun setVerifier(scope: String, on: Boolean) {
+        ShizukuInstall.setVerifier(this, scope, on) { value ->
+            Toast.makeText(this, "Теперь: $value", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun copyToClipboard(text: String) {
         val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+
         cm.setPrimaryClip(android.content.ClipData.newPlainText("hermes", text))
         Toast.makeText(this, "Скопировано", Toast.LENGTH_SHORT).show()
     }

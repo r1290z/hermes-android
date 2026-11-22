@@ -188,10 +188,23 @@ object ShizukuInstall {
             var ok = false
             var detail = ""
             try {
-                val raw = service.run("pm install -r -t " + shellQuote(path))
+                // Play Protect runs its install-time verifier for shell installs
+                // when `verifier_verify_adb_installs` is 1, and pops "Install
+                // anyway?" for an app Google has never seen — our build is signed
+                // with our own key, so it is *always* unseen. Turning that one
+                // global off is what makes the install silent; it is scoped to
+                // adb/shell installs only, not to installs from the file manager.
+                val cmd = "settings put global verifier_verify_adb_installs 0; " +
+                    "pm install -r -t " + shellQuote(path) +
+                    "; settings get global verifier_verify_adb_installs"
+                val raw = service.run(cmd)
+                val body = raw.substringAfter('\n', "")
                 val code = raw.substringBefore('\n').trim().toIntOrNull() ?: -1
-                detail = raw.substringAfter('\n', "").trim()
-                ok = code == 0 && detail.contains("Success", ignoreCase = true)
+                // Last line is the settings readback; everything before it is pm.
+                val pmOut = body.lines().dropLast(1).joinToString("\n").trim()
+                val verifier = body.lines().lastOrNull()?.trim().orEmpty()
+                detail = pmOut
+                ok = code == 0 && pmOut.contains("Success", ignoreCase = true)
                 if (ok) {
                     // "Success" from pm is what pm thinks, not what is installed.
                     // Read the version code back: if the phone still reports the
@@ -199,10 +212,11 @@ object ShizukuInstall {
                     // would be a lie.
                     val probe = service.run("dumpsys package " + PKG + " | grep -m1 versionCode")
                     val installed = probe.substringAfter('\n', "").trim()
-                    detail = "Success\nустановлено: " + installed
-                    Diag.log("shizuku", "pm install: Success, $installed")
+                    detail = "Success\nустановлено: " + installed +
+                        "\nпроверка Play Protect для shell: " + if (verifier == "0") "выключена" else "включена ($verifier)"
+                    Diag.log("shizuku", "pm install: Success, $installed, verifier=$verifier")
                 } else {
-                    Diag.log("shizuku", "pm install: ${detail.take(120)}")
+                    Diag.log("shizuku", "pm install: ${pmOut.take(120)}")
                 }
             } catch (e: Throwable) {
                 detail = e.message ?: e.javaClass.simpleName
@@ -210,6 +224,32 @@ object ShizukuInstall {
             }
             main.post { onResult(ok, detail) }
         }.apply { isDaemon = true }.start()
+    }
+
+    /** Current install-verification settings, as the system reports them. */
+    fun verifierState(context: Context, onResult: (String) -> Unit) {
+        val cmd = "settings get global verifier_verify_adb_installs; " +
+            "settings get global package_verifier_enable"
+        runCommand(context, cmd) { raw ->
+            val lines = raw.substringAfter('\n', "").lines().map { it.trim() }
+            onResult("проверка shell-установок: " + (lines.getOrNull(0) ?: "?") +
+                "\nпроверка всех установок: " + (lines.getOrNull(1) ?: "?"))
+        }
+    }
+
+    /**
+     * Turns the install-time verifier on or off.
+     *
+     * Only `verifier_verify_adb_installs` is touched by the update flow; this
+     * also offers `package_verifier_enable` for when the user wants the prompt
+     * gone for installs from the file manager too. Both are reversible and
+     * reported back as the system's own value, not as our guess.
+     */
+    fun setVerifier(context: Context, globalKey: String, on: Boolean, onResult: (String) -> Unit) {
+        val key = if (globalKey == "all") "package_verifier_enable" else "verifier_verify_adb_installs"
+        val value = if (on) "1" else "0"
+        val cmd = "settings put global $key $value; settings get global $key"
+        runCommand(context, cmd) { raw -> onResult(raw.substringAfter('\n', "").trim()) }
     }
 
     private fun bind(context: Context, onReady: (Boolean) -> Unit) {
