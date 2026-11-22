@@ -1,7 +1,6 @@
 package ru.evgen.hermes
 
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
 
 /**
  * Shared state of the project filter: what ProjectsFragment picked and what
@@ -44,10 +43,5 @@ class ProjectFilterModel : ViewModel() {
             // Boundary-aware prefix: /home/x/abc must not match /home/x/a.
             return under(cwd, path)
         }
-    }
-
-    class Factory : ViewModelProvider.Factory {
-        @Suppress("UNCHECKED_CAST")
-        override fun <T : ViewModel> create(modelClass: Class<T>): T = ProjectFilterModel() as T
     }
 }

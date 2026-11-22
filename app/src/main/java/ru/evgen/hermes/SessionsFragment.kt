@@ -365,9 +365,8 @@ class SessionsFragment : Fragment(R.layout.fragment_sessions) {
 
     // ── Swipes ────────────────────────────────────────────────────────────────
 
-    /** Right swipe pins, left swipe goes to the pager — page navigation owns
-     *  that direction now (the delete move stays in the long-press menu, which
-     *  already had it). */
+    /** Right swipe pins (the only direction enabled — left goes to the pager
+     *  as page navigation; delete stays in the long-press menu). */
     private fun attachSwipes() {
         val callback = object : ItemTouchHelper.SimpleCallback(
             0, ItemTouchHelper.END
@@ -395,16 +394,9 @@ class SessionsFragment : Fragment(R.layout.fragment_sessions) {
                     adapter.notifyItemChanged(viewHolder.bindingAdapterPosition)
                     return
                 }
-                if (direction == ItemTouchHelper.END) {
-                    scope.launch {
-                        withContext(Dispatchers.IO) { api.setPinned(session.id, !session.pinned) }
-                        load(force = true)
-                    }
-                } else {
-                    // The row is already visually gone; put it back until the
-                    // user confirms, otherwise "Отмена" leaves a hole.
-                    adapter.notifyItemChanged(viewHolder.bindingAdapterPosition)
-                    askDelete(session)
+                scope.launch {
+                    withContext(Dispatchers.IO) { api.setPinned(session.id, !session.pinned) }
+                    load(force = true)
                 }
             }
         }
