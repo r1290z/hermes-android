@@ -362,6 +362,7 @@ class ChatFragment : Fragment() {
     fun openSession(id: String, title: String?) {
         if (id != sessionId) {
             saveDraft() // the draft belongs to the session it was typed in
+            clearStagedAttachments()
             sessionId = id
             this.title.text = title ?: getString(R.string.new_session)
             adapter.submit(emptyList())
@@ -390,6 +391,7 @@ class ChatFragment : Fragment() {
     fun startNewSession() {
         val previous = sessionId
         saveDraft()  // the draft belongs to the session it was typed in
+        clearStagedAttachments()
         liveJob?.cancel()
         liveJob = null
         // A turn still streaming belongs to the session we are leaving. Cancel the
@@ -870,6 +872,16 @@ class ChatFragment : Fragment() {
             .show()
     }
 
+    /** Drops a staged file/image and hides their views. Used when the chat
+     *  changes and after a send: a chip that outlives its file is a lie. */
+    private fun clearStagedAttachments() {
+        pendingFile = null
+        pendingImage = null
+        showFileChip()
+        view?.findViewById<android.widget.FrameLayout>(R.id.attachPreview)?.visibility = View.GONE
+        updateSendState()
+    }
+
     /** The staged file, visible above the composer with its size and a cross. */
     private fun showFileChip() {
         val chip = view?.findViewById<View>(R.id.fileChip) ?: return
@@ -902,7 +914,11 @@ class ChatFragment : Fragment() {
         val file = pendingFile
         pendingFile = null
         showFileChip()
-        if (file != null) Diag.log("file", "отправка ${file.name}, ${file.size} байт")
+        Diag.log(
+            "file",
+            if (file != null) "отправка ${file.name}, ${file.size} байт"
+            else "в отправке файла нет"
+        )
 
         val id = sessionId
         if (id == null) {
@@ -938,6 +954,15 @@ class ChatFragment : Fragment() {
     private fun steerDuringTurn() {
         val id = sessionId ?: return
         if (!streaming) { submit(); return }
+        // A steer is text-only on the wire: `prompt.steer_queued` has no attachment
+        // field. Sending the text anyway silently dropped the staged file and left
+        // its chip hanging above the composer, so it looked like the file had been
+        // sent. Refuse and say why instead of losing it.
+        if (pendingFile != null || pendingImage != null) {
+            Diag.log("file", "steer отклонён: есть вложение")
+            Toast.makeText(context, R.string.steer_no_attachments, Toast.LENGTH_LONG).show()
+            return
+        }
         val text = input.text.toString().trim()
         if (text.isEmpty()) return
         input.setText("")

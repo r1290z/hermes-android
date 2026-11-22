@@ -157,4 +157,5 @@
     <string name="file_send_now">Отправить сейчас</string>
     <string name="remove_file">Убрать файл</string>
     <string name="file_read_failed">Не удалось прочитать файл: %1$s</string>
+    <string name="steer_no_attachments">Файл или картинка не уходят в текущий ход. Дождись ответа — вложение останется прикреплённым.</string>
 </resources>
