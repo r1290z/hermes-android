@@ -79,6 +79,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
+    // Swipe navigation: the session list becomes a ViewPager2 page, i.e. a
+    // fragment hosted by MainActivity's activity_shell container.
+    implementation("androidx.fragment:fragment-ktx:1.8.5")
+    implementation("androidx.viewpager2:viewpager2:1.1.0")
     // Shizuku: install our own update as shell, so the phone never asks for the
     // per-source sideload permission and the user skips the installer screen.
     // The `provider` artifact registers the binder bridge the manifest declares.

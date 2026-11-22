@@ -31,7 +31,11 @@ data class Session(
     var activity: String = "",
     /** Prompt tokens the last turn carried — what the status strip shows as
      *  "context used". Absent on a session that never ran a turn. */
-    val inputTokens: Long = 0
+    val inputTokens: Long = 0,
+    /** Working directory the session runs in — the key project filtering uses
+     *  (`cwd` starts with project.path). JSON null / absent on gateways that
+     *  do not send it: then filtering is simply skipped. */
+    val cwd: String? = null
 ) {
     /** What the search box matches against: the title is often absent or just
      *  "Новый сеанс", the preview is what the user actually remembers. */
@@ -83,7 +87,9 @@ data class Session(
                 unread = json.optBoolean("unread", false),
                 running = running,
                 activity = if (running) activity else "",
-                inputTokens = json.optLong("input_tokens", 0L)
+                inputTokens = json.optLong("input_tokens", 0L),
+                cwd = if (json.isNull("cwd")) null
+                else json.optString("cwd").ifEmpty { null }
             )
         }
     }

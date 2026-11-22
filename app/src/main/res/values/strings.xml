@@ -145,6 +145,11 @@
     <string name="search_role_assistant">ассистент</string>
     <string name="search_role_tool">инструмент</string>
     <string name="expenses">Расходы</string>
+    <string name="projects">Проекты</string>
+    <string name="projects_empty">Проектов пока нет: hermes project create … на хосте — и они появятся здесь.</string>
+    <string name="projects_home_hint">Домашние сеансы</string>
+    <string name="projects_all_sessions">Все сеансы</string>
+    <string name="project_filter_reset">Сбросить</string>
     <string name="expenses_prices">Тарифы</string>
     <string name="expenses_by_model">По моделям</string>
     <string name="expenses_note">Токены — учёт шлюза, он точный. Цену шлюз для своего провайдера не считает (отдаёт 0), поэтому рубли посчитаны здесь по тарифам PlusVibe за 1 млн токенов. Нажми на модель, чтобы поправить тариф.</string>

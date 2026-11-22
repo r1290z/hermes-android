@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Swipe shell: ViewPager2 pages the screens (0 = projects, 1 = sessions,
+     chat joins as page 2 later). The dot strip below is the only navigation
+     chrome — 20dp, three dots, no labels, so the lists keep their height. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/app_bg"
+    android:orientation="vertical">
+
+    <androidx.viewpager2.widget.ViewPager2
+        android:id="@+id/pager"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+    <!-- Always visible: with two pages the third dot is dark, it lights up
+         when the chat page lands. -->
+    <LinearLayout
+        android:id="@+id/dots"
+        android:layout_width="match_parent"
+        android:layout_height="20dp"
+        android:gravity="center"
+        android:orientation="horizontal">
+
+        <View
+            android:id="@+id/dot0"
+            android:layout_width="6dp"
+            android:layout_height="6dp"
+            android:background="@drawable/bg_dot" />
+
+        <View
+            android:id="@+id/dot1"
+            android:layout_width="6dp"
+            android:layout_height="6dp"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/bg_dot" />
+
+        <View
+            android:id="@+id/dot2"
+            android:layout_width="6dp"
+            android:layout_height="6dp"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/bg_dot" />
+    </LinearLayout>
+</LinearLayout>

@@ -513,6 +513,18 @@ class ApiClient private constructor(context: Context) {
         }
     }
 
+    // ── Projects ─────────────────────────────────────────────────────────────
+
+    /**
+     * `projects.tree` over the socket. Params must be EXACTLY `{}` — the server
+     * rejects any extra field (even request_id) with 4000 "Extra inputs are not
+     * permitted". Home always first, the rest by lastActive (see Project.listFrom).
+     */
+    fun projects(): List<Project> {
+        val result = rpc("projects.tree", JSONObject(), 25000) ?: return emptyList()
+        return Project.listFrom(result)
+    }
+
     // ── Messages (REST) ──────────────────────────────────────────────────────
 
     fun messages(sessionId: String, limit: Int = 200, offset: Int = 0): List<ChatMessage> {

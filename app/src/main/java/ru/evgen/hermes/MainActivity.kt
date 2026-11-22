@@ -4,54 +4,37 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.view.View
-import android.view.inputmethod.EditorInfo
-import android.view.inputmethod.InputMethodManager
-import android.widget.EditText
-import android.widget.ImageButton
-import android.widget.TextView
 import android.widget.Toast
-import androidx.recyclerview.widget.ItemTouchHelper
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.ViewModelProvider
+import androidx.viewpager2.widget.ViewPager2
+import androidx.viewpager2.adapter.FragmentStateAdapter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Home screen: the session list.
+ * Host activity: owns the fragment container (activity_shell) where the session
+ * list now lives as [SessionsFragment] — the preparation for swipe navigation.
+ * What stays here is everything that is not the list: the "…" menu, update
+ * checks, Shizuku, diagnostics log, expenses/projects launchers and logout.
  *
- * Everything here is native and talks to the API through [ApiClient] — there is
- * no WebView anywhere in the app any more. The list exists because a phone needs
- * to find a session in one screen, which the desktop sidebar cannot do.
+ * FragmentActivity is required to host androidx fragments; the manifest keeps
+ * singleTask, because notifications tap into this activity.
  */
-class MainActivity : Activity() {
+class MainActivity : FragmentActivity(), SessionsFragment.Host {
 
     private lateinit var api: ApiClient
-    private lateinit var list: RecyclerView
-    private lateinit var search: EditText
-    private lateinit var status: TextView
-    private lateinit var adapter: SessionAdapter
+    private lateinit var pager: ViewPager2
+    private lateinit var dots: List<View>
 
-    private val all = mutableListOf<Session>()
-    private var profiles: List<ApiClient.ProfileInfo> = emptyList()
-
-    /** Own scope: plain Activity is not a LifecycleOwner. */
+    /** Own scope for host-level work (update checks). */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private lateinit var statusBar: StatusBar
-    private val ui = Handler(Looper.getMainLooper())
-    private var loading = false
-    /** Live refresh of running / unread state while this screen is visible. */
-    private var pollJob: Job? = null
-
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -63,373 +46,80 @@ class MainActivity : Activity() {
             return
         }
 
-        setContentView(R.layout.activity_main)
-        list = findViewById(R.id.list)
-        search = findViewById(R.id.search)
-        status = findViewById(R.id.status)
-
-        adapter = SessionAdapter(
-            onOpen = { openChat(it) },
-            onLongPress = { session, _ -> showActions(session) }
-        )
-        list.layoutManager = LinearLayoutManager(this)
-        list.adapter = adapter
-        list.itemAnimator = null
-        attachSwipes()
-
-        findViewById<View>(R.id.newSession).setOnClickListener { openChat(null) }
-        findViewById<View>(R.id.btnKanban).setOnClickListener {
-            startActivity(Intent(this, ru.evgen.hermes.kanban.KanbanBoardActivity::class.java))
-        }
-        findViewById<ImageButton>(R.id.btnRefresh).apply {
-            setOnClickListener { load(force = true) }
-            setOnLongClickListener {
-                checkForUpdates(manual = true)
-                true
-            }
-        }
-        findViewById<ImageButton>(R.id.btnLogout).setOnClickListener { showMore() }
-
-        search.setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == IME_ACTION_SEARCH) {
-                hideKeyboard()
-                true
-            } else false
-        }
-        search.addTextChangedListener(object : android.text.TextWatcher {
-            override fun afterTextChanged(s: android.text.Editable?) = applyFilter()
-            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        setContentView(R.layout.activity_shell)
+        pager = findViewById(R.id.pager)
+        dots = listOf(findViewById(R.id.dot0), findViewById(R.id.dot1), findViewById(R.id.dot2))
+        pager.adapter = PageAdapter()
+        pager.isUserInputEnabled = true
+        pager.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
+            override fun onPageSelected(position: Int) = renderDots(position)
         })
+        renderDots(pager.currentItem)
 
         Notifications.ensureChannels(this)
         askNotificationPermission()
 
-        statusBar = StatusBar(this, findViewById(R.id.statusBar), api)
-        findViewById<View>(R.id.statusBar).setOnClickListener { statusBar.showDetails() }
-
-        load(force = true)
-        loadProfiles()
         checkForUpdates(manual = false)
     }
 
-    override fun onResume() {
-        super.onResume()
-        if (!api.isLoggedIn()) {
-            startActivity(Intent(this, LoginActivity::class.java))
-            finish()
-            return
-        }
-        // Coming back from a chat: the title or the last-active time changed.
-        // The marks for that session are applied inside load().
-        if (!loading && all.isNotEmpty()) load(force = true)
-        if (::statusBar.isInitialized) statusBar.start()
-        startActivityPoll()
+    override fun onRefreshLongPress() {
+        checkForUpdates(manual = true)
     }
 
-    override fun onPause() {
-        super.onPause()
-        // Nothing on this screen is visible any more: stop both polls.
-        stopActivityPoll()
-        if (::statusBar.isInitialized) statusBar.stop()
+    override fun onMoreClicked() {
+        showMore()
     }
 
-    // ── Sessions ─────────────────────────────────────────────────────────────
+    // ── Swipe shell ───────────────────────────────────────────────────────────
 
-    private fun load(force: Boolean) {
-        if (loading) return
-        loading = true
-        if (all.isEmpty()) {
-            status.visibility = View.VISIBLE
-            status.text = getString(R.string.loading)
-        }
-        scope.launch {
-            val sessions = withContext(Dispatchers.IO) { api.sessions() }
-            loading = false
-            if (sessions.isEmpty() && !api.isLoggedIn()) {
-                startActivity(Intent(this@MainActivity, LoginActivity::class.java))
-                finish()
-                return@launch
-            }
-            // Marks are applied here, not on the server: its `unread` column is
-            // never set true on this gateway, so the count-based marker is what
-            // actually produces a dot (see ReadMarks).
-            val openedSince = ReadMarks.takePending(this@MainActivity)
-            val runningLocally = Running.active(this@MainActivity)
-            for (s in sessions) {
-                if (s.id == openedSince) {
-                    ReadMarks.markRead(this@MainActivity, s.id, s.messageCount)
-                }
-                s.unread = ReadMarks.isUnread(this@MainActivity, s)
-                if (runningLocally.contains(s.id)) s.running = true
-            }
-            all.clear()
-            all.addAll(sessions)
-            applyFilter()
+    /** Pages: 0 = projects, 1 = sessions. The chat joins as page 2 in the next
+     *  card — the dot strip already reserves its place. */
+    private inner class PageAdapter : FragmentStateAdapter(this@MainActivity) {
+        override fun getItemCount() = 2
+        override fun createFragment(position: Int): Fragment = when (position) {
+            0 -> ProjectsFragment()
+            else -> SessionsFragment()
         }
     }
 
-    /**
-     * Keeps the list live while it is on screen: which session is working, and
-     * which ones answered unseen.
-     *
-     * `/api/status` is 2 KB and answers "is anything running at all"; the session
-     * page is 115 KB, so it is only fetched while something IS running. Polling the
-     * page unconditionally would move tens of megabytes an hour for a pulse.
-     */
-    private fun startActivityPoll() {
-        pollJob?.cancel()
-        pollJob = scope.launch {
-            while (isActive) {
-                delay(POLL_MS)
-                if (loading) continue
-                val busy = withContext(Dispatchers.IO) { api.gatewayBusy() }
-                val localRunning = Running.active(this@MainActivity)
-                if (!busy && localRunning.isEmpty()) {
-                    if (all.any { it.running }) {
-                        all.forEach { it.running = false }
-                        applyFilter()
-                    }
-                    continue
-                }
-                val fresh = withContext(Dispatchers.IO) { api.sessions(limit = 20, order = "recent") }
-                if (fresh.isEmpty()) continue
-                val byId = fresh.associateBy { it.id }
-                // Reconcile the local registry against the server. The local entry
-                // exists to make the pulse appear instantly on this phone's own
-                // turns — it must not outlive the turn. It used to: if the chat
-                // screen was closed mid-turn, `Done` never arrived, the entry sat
-                // there for its whole TTL and the row kept pulsing long after the
-                // answer was read. A server row that says "not running" for 20 s
-                // is the authority; the grace period covers the moment right after
-                // submit, when the server has not stamped anything yet.
-                val now = System.currentTimeMillis()
-                for (id in localRunning) {
-                    val row = byId[id] ?: continue
-                    val localAge = now - (Running.since(this@MainActivity, id) ?: now)
-                    if (!row.running && localAge > 20_000) Running.finished(this@MainActivity, id)
-                }
-                val stillLocal = Running.active(this@MainActivity)
-                var changed = false
-                for (s in all) {
-                    val f = byId[s.id]
-                    // A row outside the fetched page (or absent from it) is not
-                    // running unless this phone started it — "sticky true" was how
-                    // a finished turn could pulse forever.
-                    val runningNow = if (f != null) (f.running || stillLocal.contains(s.id))
-                    else stillLocal.contains(s.id)
-                    if (f != null && f.messageCount != s.messageCount) {
-                        s.messageCount = f.messageCount
-                        // New messages arrived while the list was open: recompute
-                        // the dot instead of waiting for the next full reload.
-                        s.unread = ReadMarks.isUnread(this@MainActivity, s)
-                        changed = true
-                    }
-                    if (s.running != runningNow) {
-                        s.running = runningNow
-                        s.activity = if (runningNow) (f?.activity ?: "") else ""
-                        changed = true
-                    }
-                }
-                if (changed) applyFilter()
-            }
+    /** Called from page 0: pick the project filter and show the sessions. */
+    fun openProject(project: Project?) {
+        sessionsFragment()?.applyProject(project)
+        // The filter lives in the shared ViewModel: it survives the fragment
+        // not being created yet (first tap right after launch) and recreation.
+        ViewModelProvider(this)[ProjectFilterModel::class.java].selected = project
+        pager.currentItem = 1
+    }
+
+    /** Page 0 highlights the selected row; when the filter was reset from the
+     *  sessions page banner, the highlight must drop. */
+    fun syncProjectSelection() {
+        supportFragmentManager.fragments.filterIsInstance<ProjectsFragment>()
+            .forEach { it.syncSelection() }
+    }
+
+    private fun sessionsFragment(): SessionsFragment? =
+        supportFragmentManager.fragments.filterIsInstance<SessionsFragment>().firstOrNull()
+
+    private fun renderDots(position: Int) {
+        for (i in dots.indices) {
+            dots[i].background?.setTint(
+                getColor(if (i == position) R.color.accent else R.color.text_secondary)
+            )
         }
     }
 
-    private fun stopActivityPoll() {
-        pollJob?.cancel()
-        pollJob = null
-    }
-
-    private fun applyFilter() {
-        val q = search.text.toString().trim().lowercase()
-        val shown = if (q.isEmpty()) all else all.filter { it.haystack.contains(q) }
-        adapter.submit(shown)
-        if (shown.isEmpty()) {
-            status.visibility = View.VISIBLE
-            status.text = if (q.isNotEmpty()) getString(R.string.nothing_found)
-            else getString(R.string.no_sessions)
+    /** Back from page 1 goes to page 0 (projects), not out of the app. */
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (::pager.isInitialized && pager.currentItem != 0) {
+            pager.currentItem = pager.currentItem - 1
         } else {
-            status.visibility = View.GONE
+            super.onBackPressed()
         }
     }
 
-    private fun openChat(session: Session?) {
-        val intent = Intent(this, ChatActivity::class.java)
-        session?.let {
-            intent.putExtra(ChatActivity.EXTRA_SESSION_ID, it.id)
-            intent.putExtra(ChatActivity.EXTRA_SESSION_TITLE, it.title)
-            ReadMarks.markRead(this, it.id, it.messageCount)
-            if (it.unread) {
-                // Optimistic clear: the dot must not survive the tap.
-                it.unread = false
-                // The server's own flag is still PATCHed — other clients read it —
-                // but the dot here is driven by ReadMarks, because on this gateway
-                // `unread` never comes back true.
-                scope.launch { withContext(Dispatchers.IO) { api.markRead(it.id) } }
-            }
-        }
-        startActivity(intent)
-    }
-
-    // ── Profiles ─────────────────────────────────────────────────────────────
-
-    /** Profile chips above the list (kanban-style): «Все» + one per profile.
-     *  The choice scopes every listing/create call and persists. */
-    private fun loadProfiles() {
-        scope.launch {
-            val list = withContext(Dispatchers.IO) { api.profiles() }
-            if (list.isEmpty()) return@launch
-            profiles = list
-            val saved = api.profile
-            // Drop a persisted profile the server no longer has.
-            if (saved != null && list.none { it.name == saved }) api.profile = null
-            renderProfileChips()
-        }
-    }
-
-    private fun renderProfileChips() {
-        val strip = findViewById<android.widget.LinearLayout>(R.id.profileChips) ?: return
-        strip.removeAllViews()
-        val active = api.profile
-        fun chip(label: String, tag: String?, activeNow: Boolean) {
-            val chip = android.widget.TextView(this).apply {
-                text = label
-                textSize = 13f
-                setPadding(36, 12, 36, 12)
-                setBackgroundResource(if (activeNow) R.drawable.bg_chip_active else R.drawable.bg_chip)
-                setTextColor(if (activeNow) android.graphics.Color.WHITE else getColor(R.color.text_primary))
-                setOnClickListener {
-                    api.profile = tag
-                    renderProfileChips()
-                    load(force = true)
-                }
-            }
-            strip.addView(chip)
-            (chip.layoutParams as? android.widget.LinearLayout.LayoutParams)?.marginEnd = 16
-        }
-        chip(getString(R.string.profiles_all), null, active == null)
-        for (p in profiles) {
-            chip(p.displayName.ifEmpty { p.name }, p.name, active == p.name)
-        }
-        strip.parent.let { (it as? View)?.visibility = View.VISIBLE }
-    }
-
-    // ── Swipes ────────────────────────────────────────────────────────────────
-
-    /** Right swipe pins, left swipe deletes — the two things a thumb does most
-     *  on this screen. Long-press menu stays as the full set of actions. */
-    private fun attachSwipes() {
-        val callback = object : ItemTouchHelper.SimpleCallback(
-            0, ItemTouchHelper.START or ItemTouchHelper.END
-        ) {
-            override fun onMove(
-                recyclerView: RecyclerView,
-                viewHolder: RecyclerView.ViewHolder,
-                target: RecyclerView.ViewHolder
-            ): Boolean = false
-
-            override fun getMovementFlags(
-                recyclerView: RecyclerView,
-                viewHolder: RecyclerView.ViewHolder
-            ): Int {
-                // Headers and the "Продолжить" row are not swipeable.
-                if (adapter.rowAt(viewHolder.bindingAdapterPosition) !is SessionAdapter.Row.Item) {
-                    return 0
-                }
-                return super.getMovementFlags(recyclerView, viewHolder)
-            }
-
-            override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
-                val row = adapter.rowAt(viewHolder.bindingAdapterPosition)
-                val session = (row as? SessionAdapter.Row.Item)?.session ?: run {
-                    adapter.notifyItemChanged(viewHolder.bindingAdapterPosition)
-                    return
-                }
-                if (direction == ItemTouchHelper.END) {
-                    scope.launch {
-                        withContext(Dispatchers.IO) { api.setPinned(session.id, !session.pinned) }
-                        load(force = true)
-                    }
-                } else {
-                    // The row is already visually gone; put it back until the
-                    // user confirms, otherwise "Отмена" leaves a hole.
-                    adapter.notifyItemChanged(viewHolder.bindingAdapterPosition)
-                    askDelete(session)
-                }
-            }
-        }
-        ItemTouchHelper(callback).attachToRecyclerView(list)
-    }
-
-    private fun showActions(session: Session) {
-        val pinLabel = getString(if (session.pinned) R.string.unpin else R.string.pin)
-        val items = arrayOf<CharSequence>(
-            pinLabel, getString(R.string.rename), getString(R.string.archive_action), getString(R.string.delete)
-        )
-        AlertDialog.Builder(this)
-            .setTitle(session.title)
-            .setItems(items) { _, which ->
-                when (which) {
-                    0 -> scope.launch {
-                        withContext(Dispatchers.IO) { api.setPinned(session.id, !session.pinned) }
-                        load(force = true)
-                    }
-                    1 -> askRename(session)
-                    2 -> scope.launch {
-                        val ok = withContext(Dispatchers.IO) { api.setArchived(session.id, true) }
-                        if (ok) {
-                            ArchiveStore.add(this@MainActivity, session.id, session.title)
-                            all.removeAll { it.id == session.id }
-                            applyFilter()
-                            Toast.makeText(this@MainActivity, R.string.archived_toast, Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                    3 -> askDelete(session)
-                }
-            }
-            .setNegativeButton(R.string.cancel, null)
-            .show()
-    }
-
-    private fun askRename(session: Session) {
-        val field = EditText(this).apply {
-            setText(session.title)
-            setSingleLine(true)
-            setPadding(48, 32, 48, 32)
-        }
-        AlertDialog.Builder(this)
-            .setTitle(R.string.rename)
-            .setView(field)
-            .setPositiveButton(android.R.string.ok) { _, _ ->
-                val title = field.text.toString().trim()
-                if (title.isEmpty()) return@setPositiveButton
-                scope.launch {
-                    withContext(Dispatchers.IO) { api.renameSession(session.id, title) }
-                    load(force = true)
-                }
-            }
-            .setNegativeButton(R.string.cancel, null)
-            .show()
-    }
-
-    private fun askDelete(session: Session) {
-        AlertDialog.Builder(this)
-            .setTitle(R.string.delete)
-            .setMessage(session.title)
-            .setPositiveButton(R.string.delete) { _, _ ->
-                scope.launch {
-                    val ok = withContext(Dispatchers.IO) { api.deleteSession(session.id) }
-                    if (ok) {
-                        all.removeAll { it.id == session.id }
-                        applyFilter()
-                        Toast.makeText(this@MainActivity, R.string.deleted, Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
-            .setNegativeButton(R.string.cancel, null)
-            .show()
-    }
+    // ── The "…" menu ──────────────────────────────────────────────────────────
 
     /** The "…" button: archive, update, Shizuku state, then the destructive end. */
     private fun showMore() {
@@ -742,23 +432,13 @@ class MainActivity : Activity() {
         )
     }
 
-    private fun hideKeyboard() {
-        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-        imm.hideSoftInputFromWindow(search.windowToken, 0)
-        search.clearFocus()
-    }
-
     override fun onDestroy() {
-        if (::statusBar.isInitialized) statusBar.destroy()
         scope.cancel()
         super.onDestroy()
     }
 
     companion object {
         private const val NOTIFICATION_PERMISSION_REQUEST = 1002
-        /** Cheap flag first, session page only while something runs. */
-        private const val POLL_MS = 6_000L
-        private const val IME_ACTION_SEARCH = EditorInfo.IME_ACTION_SEARCH
 
         /** Kept for the notification tap intent: opening a session from the
          *  shade has to land in the chat, not on the list. */
