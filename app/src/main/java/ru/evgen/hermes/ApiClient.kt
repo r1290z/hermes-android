@@ -7,6 +7,7 @@ import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -1258,7 +1259,7 @@ class ApiClient private constructor(context: Context) {
      * unauthenticated, got a 302 to /login and saved an HTML page as .apk.
      */
     fun cookieHeader(url: String): String? {
-        val http = HttpUrl.parse(url) ?: return null
+        val http = url.toHttpUrlOrNull() ?: return null
         val cookies = cookieJar.loadForRequest(http)
         if (cookies.isEmpty()) return null
         return cookies.joinToString("; ") { it.name + "=" + it.value }

@@ -340,7 +340,9 @@ class MainActivity : Activity() {
     private fun showMore() {
         val shizuku = ShizukuInstall.describe(this)
         AlertDialog.Builder(this)
-            .setTitle(R.string.more)
+            // Version in the title: after a silent install the only way to know
+            // which build is actually running was the diagnostics log.
+            .setTitle(getString(R.string.more) + " · " + versionName() + " (" + currentVersion() + ")")
             .setItems(arrayOf<CharSequence>(
                 getString(R.string.archive),
                 "Проверить обновление",
