@@ -163,6 +163,8 @@
             android:layout_height="44dp"
             android:background="?android:attr/selectableItemBackgroundBorderless"
             android:contentDescription="@string/send"
-            android:src="@drawable/ic_send" />
+            android:src="@drawable/ic_send"
+            android:tint="@color/accent"
+            />
     </LinearLayout>
 </LinearLayout>

@@ -76,14 +76,16 @@ object UpdateChecker {
     fun offer(activity: Activity, info: Info, currentVersionCode: Int) {
         if (info.versionCode <= currentVersionCode) return
         val notes = if (info.notes.isBlank()) "" else "\n\n${info.notes}"
+        val shizukuState = ShizukuInstall.describe(activity)
         val viaShizuku = ShizukuInstall.isReady()
         activity.runOnUiThread {
             android.app.AlertDialog.Builder(activity)
                 .setTitle("Обновление ${info.versionName}")
                 .setMessage(
                     "Установлено: $currentVersionCode, доступно: ${info.versionCode}$notes" +
-                        if (viaShizuku) "\n\nУстановится через Shizuku — без запросов системы."
-                        else ""
+                        "\n\nShizuku: $shizukuState" +
+                        if (viaShizuku) " — поставится без запросов системы."
+                        else " — поставится обычным установщиком."
                 )
                 .setPositiveButton("Скачать") { _, _ -> download(activity, info) }
                 .setNegativeButton("Позже", null)
@@ -172,7 +174,20 @@ object UpdateChecker {
                     toast(activity, "Обновлено — открой Hermes заново")
                 } else {
                     Diag.log("update", "Shizuku не смог: ${detail.take(120)}")
-                    toast(activity, "Shizuku не смог — обычная установка")
+                    // Say WHY, not just "не смог": pm's own words are the only
+                    // way to tell a missing grant from a refused APK.
+                    android.app.AlertDialog.Builder(activity)
+                        .setTitle("Shizuku не установил")
+                        .setMessage(
+                            "pm ответил:\n\n" + detail.take(600) +
+                                "\n\nУстанавливаю обычным установщиком."
+                        )
+                        .setPositiveButton("Копировать") { _, _ ->
+                            val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("hermes", detail))
+                        }
+                        .setNegativeButton("Закрыть", null)
+                        .show()
                     install(activity, apkUri)
                 }
             }

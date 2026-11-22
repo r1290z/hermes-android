@@ -382,6 +382,10 @@ class MainActivity : Activity() {
             .setTitle("Shizuku")
             .setMessage(text)
             .setNegativeButton("Закрыть", null)
+            // The bridge is checkable on its own: this runs one harmless shell
+            // command through Shizuku and shows the raw answer, so a failed
+            // update stops being a mystery toast.
+            .setNeutralButton("Проверить") { _, _ -> checkShizuku() }
         // Asking for the grant has to be reachable on its own. It used to happen
         // only inside an update, so with no newer build available there was no way
         // to hand the app the permission at all.
@@ -389,6 +393,29 @@ class MainActivity : Activity() {
             builder.setPositiveButton("Дать доступ") { _, _ -> requestShizuku() }
         }
         builder.show()
+    }
+
+    /** Runs the Shizuku self-test and shows exactly what came back. */
+    private fun checkShizuku() {
+        if (ShizukuInstall.state(this) != ShizukuInstall.State.READY) {
+            Toast.makeText(this, "Сначала запусти Shizuku и дай доступ", Toast.LENGTH_LONG).show()
+            return
+        }
+        Toast.makeText(this, "Проверяю…", Toast.LENGTH_SHORT).show()
+        ShizukuInstall.selfTest(this) { out ->
+            AlertDialog.Builder(this)
+                .setTitle("Shizuku: проверка")
+                .setMessage(out.ifBlank { "пустой ответ" })
+                .setPositiveButton("Копировать") { _, _ -> copyToClipboard(out) }
+                .setNegativeButton("Закрыть", null)
+                .show()
+        }
+    }
+
+    private fun copyToClipboard(text: String) {
+        val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("hermes", text))
+        Toast.makeText(this, "Скопировано", Toast.LENGTH_SHORT).show()
     }
 
     private fun requestShizuku() {

@@ -224,6 +224,44 @@ object ShizukuInstall {
     /** Single-quote a path for `sh`, so a space or quote cannot break the command. */
     private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 
+    /**
+     * Proves the shell bridge actually works, instead of guessing from a status
+     * word. Runs the same `sh` path `pm install` uses and returns the raw output:
+     * uid (must be 2000 = shell), our package path, and what is in Download.
+     *
+     * Without this a failed update was one indistinguishable toast — "Shizuku не
+     * смог" — whether the cause was a missing grant, a dead service, an
+     * unreadable file or pm refusing the APK.
+     */
+    fun selfTest(context: Context, onResult: (String) -> Unit) {
+        val cmd = buildString {
+            append("id -u; ")
+            append("pm path ").append(context.packageName).append("; ")
+            append("ls -1 /sdcard/Download 2>/dev/null | tail -5")
+        }
+        val exec: (IUserService) -> Unit = { svc ->
+            Thread {
+                val out = try {
+                    svc.run(cmd).trim()
+                } catch (e: Throwable) {
+                    "ошибка вызова: ${e.message ?: e.javaClass.simpleName}"
+                }
+                Diag.log("shizuku", "проверка: " + out.replace("\n", " | ").take(300))
+                main.post { onResult(out) }
+            }.apply { isDaemon = true }.start()
+        }
+        val ready = service
+        if (ready != null) {
+            exec(ready)
+            return
+        }
+        bind(context) { bound ->
+            val svc = service
+            if (!bound || svc == null) onResult("служба Shizuku не поднялась (bind не дал binder)")
+            else exec(svc)
+        }
+    }
+
     fun release() {
         if (listenerAttached) {
             runCatching { Shizuku.removeRequestPermissionResultListener(permissionListener) }
