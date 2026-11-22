@@ -25,13 +25,19 @@ BUILD_TOOLS=/opt/android-sdk/build-tools/36.0.0
   exit 1
 }
 
-# Sources only, and NO --delete: the remote tree also holds the signing key and
-# gradle caches that a sync from here must never remove.
+# Sources mirror the repo EXACTLY, including deletions. Without --delete a file
+# removed locally stays on the remote forever, and the compiler then sees both the
+# old and the new version of the same private class — which is exactly how a green
+# build turned red: ProjectsActivity.kt was deleted in git, its stale copy carried a
+# second `private class ProjectsAdapter`, and every build failed with "cannot access
+# … it is private in file" while the sources were correct.
+# Excluded paths (the signing key, keystore.properties, build output, gradle caches)
+# are NOT deleted: rsync protects excluded files unless --delete-excluded is given.
 # Layout id check first: a missing id or a wrong view class compiles clean and
 # crashes the screen at runtime (6.1 shipped exactly that, ClassCastException on
 # every chat open). Cheaper to catch here than on the phone.
 python3 "$HERE/scripts/check_layout_ids.py"
-rsync -az \
+rsync -az --delete \
   --exclude build --exclude .gradle --exclude local.properties \
   --exclude '*.apk' --exclude .git \
   --exclude keystore.properties --exclude '*.jks' \
