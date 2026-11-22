@@ -1291,7 +1291,12 @@ class ApiClient private constructor(context: Context) {
         /** The process-wide client. Activities come and go; the socket must not. */
         fun get(context: Context): ApiClient =
             shared ?: synchronized(this) {
-                shared ?: ApiClient(context.applicationContext).also { shared = it }
+                shared ?: ApiClient(context.applicationContext).also {
+                    // The log file lives in the data dir, so it needs a context
+                    // once — and the client is created exactly once per process.
+                    Diag.init(context.applicationContext)
+                    shared = it
+                }
             }
     }
 }

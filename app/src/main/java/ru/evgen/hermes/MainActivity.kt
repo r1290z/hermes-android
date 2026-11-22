@@ -541,12 +541,15 @@ class MainActivity : Activity() {
         val head = "Hermes " + versionName() + " (" + currentVersion() + ")\n" +
             "Shizuku: " + ShizukuInstall.describe(this) + "\n\n"
         val own = Diag.tail(120).ifBlank { "(журнал пуст — приложение ещё ничего не делало)" }
+        // The file keeps several launches, so the interesting run — the one that
+        // ended in a crash — is still there after the process died.
+        val footer = "\n\nЖурнал пишется в файл и переживает перезапуск."
 
         if (ShizukuInstall.state(this) != ShizukuInstall.State.READY) {
             AlertDialog.Builder(this)
                 .setTitle("Лог")
-                .setMessage(head + own)
-                .setPositiveButton("Копировать") { _, _ -> copyToClipboard(head + own) }
+                .setMessage(head + own + footer)
+                .setPositiveButton("Копировать") { _, _ -> copyToClipboard(head + own + footer) }
                 .setNegativeButton("Закрыть", null)
                 .show()
             return
@@ -555,7 +558,8 @@ class MainActivity : Activity() {
         // -t bounds the output: the crash buffer keeps days of unrelated noise.
         val cmd = "logcat -b crash -d -t 200 2>/dev/null | tail -60"
         ShizukuInstall.runCommand(this, cmd) { crashes ->
-            val text = head + own + "\n\n— падения (logcat -b crash) —\n" + crashes.ifBlank { "(пусто — падений не было)" }
+            val text = head + own + footer + "\n\n— падения (logcat -b crash) —\n" +
+                crashes.ifBlank { "(пусто — падений не было)" }
             AlertDialog.Builder(this)
                 .setTitle("Лог")
                 .setMessage(text)

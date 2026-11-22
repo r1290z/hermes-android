@@ -58,11 +58,27 @@ object Notifications {
 
     /** Ongoing "I am working" card. Promoted as a Live Update on Android 16+. */
     fun showWorking(context: Context, sessionId: String?, sessionTitle: String, step: String) {
+        notify(context, ID_STATUS, workingNotification(context, sessionId, sessionTitle, step))
+    }
+
+    /**
+     * The same card, returned instead of posted.
+     *
+     * `startForeground` needs the Notification object itself — a service that only
+     * posted it through the manager would still be killed for "no attached
+     * notification" within five seconds.
+     */
+    fun workingNotification(
+        context: Context,
+        sessionId: String?,
+        sessionTitle: String,
+        step: String
+    ): Notification {
         val open = openIntent(context, sessionId)
         val title = sessionTitle.ifEmpty { "Hermes" }
         val text = step.ifEmpty { "Работаю…" }
 
-        val notification: Notification = if (Build.VERSION.SDK_INT >= 36) {
+        return if (Build.VERSION.SDK_INT >= 36) {
             Notification.Builder(context, CH_STATUS)
                 .setSmallIcon(R.drawable.ic_notify)
                 .setContentTitle(title)
@@ -94,7 +110,6 @@ object Notifications {
                 .setContentIntent(open)
                 .build()
         }
-        notify(context, ID_STATUS, notification)
     }
 
     /** The run ended and the answer is waiting. Cancels the working card, so the

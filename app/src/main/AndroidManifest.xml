@@ -5,6 +5,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Keeps the process alive while an answer is streaming with the screen off. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- Shizuku: a shell-uid install of our own update, no per-source sideload gate. -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <uses-permission
@@ -70,6 +73,14 @@
         <receiver
             android:name=".RequestActionReceiver"
             android:exported="false" />
+
+        <!-- Raises the process priority while a turn is running, so a long answer
+             still arrives with the screen off. Not exported: only this app starts
+             it, and it does nothing but hold a notification. -->
+        <service
+            android:name=".TurnWatchService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- Shizuku's binder handshake. Required for checkSelfPermission /
              requestPermission / bindUserService to work at all; without it every

@@ -807,6 +807,10 @@ class ChatActivity : Activity() {
         scrollToEnd()
         streaming = true
         fallbackTook = false
+        // A long answer has to survive the screen going off: the socket lives in
+        // this process, and without a foreground service Android is free to freeze
+        // it the moment the chat is not visible.
+        TurnWatchService.start(this, id, title.text.toString())
         sawDeltaThisTurn = false
         baselineText = null
         // A stale index would repaint a row from the previous turn instead of the
@@ -1019,6 +1023,9 @@ class ChatActivity : Activity() {
 
             is ChatEvent.Done -> runOnUiThread {
                 streaming = false
+                // The turn is over, so the protection is no longer needed and the
+                // card it holds is replaced by the answer notification below.
+                TurnWatchService.stop(this)
                 fallbackJob?.cancel()
                 runId = null
                 updateSendState()
@@ -1080,6 +1087,7 @@ class ChatActivity : Activity() {
     private fun stopTurn() {
         streamJob?.cancel()
         streaming = false
+        TurnWatchService.stop(this)
         updateSendState()
         // The turn lives on the server, not in this coroutine: cancelling the
         // job only stops listening, so the run has to be interrupted too.
@@ -1371,6 +1379,9 @@ class ChatActivity : Activity() {
     override fun onDestroy() {
         saveDraft()
         streamJob?.cancel()
+        // Only when nothing is running. Leaving the screen mid-turn must NOT drop
+        // the foreground service — that is the whole point of it.
+        if (!streaming) TurnWatchService.stop(this)
         fallbackJob?.cancel()
         liveJob?.cancel()
         scope.cancel()
