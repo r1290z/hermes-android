@@ -29,6 +29,9 @@ object ShizukuInstall {
 
     private const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
     private const val PERMISSION_REQUEST = 4201
+    /** Our own package, for commands that have to name it (`pm path`, `dumpsys`). */
+    private const val PKG = "ru.evgen.hermes"
+
 
     private val main = Handler(Looper.getMainLooper())
 
@@ -189,7 +192,18 @@ object ShizukuInstall {
                 val code = raw.substringBefore('\n').trim().toIntOrNull() ?: -1
                 detail = raw.substringAfter('\n', "").trim()
                 ok = code == 0 && detail.contains("Success", ignoreCase = true)
-                Diag.log("shizuku", "pm install: ${if (ok) "Success" else detail.take(120)}")
+                if (ok) {
+                    // "Success" from pm is what pm thinks, not what is installed.
+                    // Read the version code back: if the phone still reports the
+                    // old build, the update did not land and saying "Обновлено"
+                    // would be a lie.
+                    val probe = service.run("dumpsys package " + PKG + " | grep -m1 versionCode")
+                    val installed = probe.substringAfter('\n', "").trim()
+                    detail = "Success\nустановлено: " + installed
+                    Diag.log("shizuku", "pm install: Success, $installed")
+                } else {
+                    Diag.log("shizuku", "pm install: ${detail.take(120)}")
+                }
             } catch (e: Throwable) {
                 detail = e.message ?: e.javaClass.simpleName
                 Diag.log("shizuku", "pm install упал: $detail")
@@ -225,28 +239,21 @@ object ShizukuInstall {
     private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 
     /**
-     * Proves the shell bridge actually works, instead of guessing from a status
-     * word. Runs the same `sh` path `pm install` uses and returns the raw output:
-     * uid (must be 2000 = shell), our package path, and what is in Download.
+     * Runs one shell command through Shizuku and hands back `"<exit code>\n<output>"`.
      *
-     * Without this a failed update was one indistinguishable toast — "Shizuku не
-     * смог" — whether the cause was a missing grant, a dead service, an
-     * unreadable file or pm refusing the APK.
+     * Every future "do this privileged thing" feature goes through here, so the
+     * binding/threading dance lives in one place instead of being copied per
+     * command.
      */
-    fun selfTest(context: Context, onResult: (String) -> Unit) {
-        val cmd = buildString {
-            append("id -u; ")
-            append("pm path ").append(context.packageName).append("; ")
-            append("ls -1 /sdcard/Download 2>/dev/null | tail -5")
-        }
+    fun runCommand(context: Context, command: String, onResult: (String) -> Unit) {
         val exec: (IUserService) -> Unit = { svc ->
             Thread {
                 val out = try {
-                    svc.run(cmd).trim()
+                    svc.run(command).trim()
                 } catch (e: Throwable) {
                     "ошибка вызова: ${e.message ?: e.javaClass.simpleName}"
                 }
-                Diag.log("shizuku", "проверка: " + out.replace("\n", " | ").take(300))
+                Diag.log("shizuku", out.replace("\n", " | ").take(300))
                 main.post { onResult(out) }
             }.apply { isDaemon = true }.start()
         }
@@ -260,6 +267,24 @@ object ShizukuInstall {
             if (!bound || svc == null) onResult("служба Shizuku не поднялась (bind не дал binder)")
             else exec(svc)
         }
+    }
+
+    /**
+     * Proves the shell bridge actually works, instead of guessing from a status
+     * word. Runs the same `sh` path `pm install` uses and returns the raw output:
+     * uid (must be 2000 = shell), our package path, and what is in Download.
+     *
+     * Without this a failed update was one indistinguishable toast — "Shizuku не
+     * смог" — whether the cause was a missing grant, a dead service, an
+     * unreadable file or pm refusing the APK.
+     */
+    fun selfTest(context: Context, onResult: (String) -> Unit) {
+        val cmd = buildString {
+            append("id -u; ")
+            append("pm path ").append(PKG).append("; ")
+            append("ls -1 /sdcard/Download 2>/dev/null | tail -5")
+        }
+        runCommand(context, cmd, onResult)
     }
 
     fun release() {

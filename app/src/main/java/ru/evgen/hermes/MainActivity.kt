@@ -345,12 +345,14 @@ class MainActivity : Activity() {
                 getString(R.string.archive),
                 "Проверить обновление",
                 "Shizuku: $shizuku",
+                "Фоновая работа",
                 getString(R.string.logout)
             )) { _, which ->
                 when (which) {
                     0 -> startActivity(Intent(this, ArchiveActivity::class.java))
                     1 -> checkForUpdates(manual = true)
                     2 -> explainShizuku()
+                    3 -> checkBackgroundWork()
                     else -> askLogout()
                 }
             }
@@ -406,6 +408,64 @@ class MainActivity : Activity() {
             AlertDialog.Builder(this)
                 .setTitle("Shizuku: проверка")
                 .setMessage(out.ifBlank { "пустой ответ" })
+                .setPositiveButton("Копировать") { _, _ -> copyToClipboard(out) }
+                .setNegativeButton("Закрыть", null)
+                .show()
+        }
+    }
+
+    /**
+     * Doze is the most likely reason the socket dies while the screen is off:
+     * Android freezes the app, the WebSocket times out, and answers stop arriving
+     * until the app is opened again. Whitelisting is the fix, and it needs the
+     * shell uid — exactly what Shizuku gives us.
+     *
+     * State is read first and shown raw: claiming "разрешено" from an exit code
+     * would be a guess, and this is a thing users will check when something else
+     * breaks.
+     */
+    private fun checkBackgroundWork() {
+        if (ShizukuInstall.state(this) != ShizukuInstall.State.READY) {
+            AlertDialog.Builder(this)
+                .setTitle("Фоновая работа")
+                .setMessage(
+                    "Чтобы вывести приложение из режима энергосбережения (Doze), нужен Shizuku " +
+                        "с выданным доступом.\n\nСейчас: " + ShizukuInstall.describe(this)
+                )
+                .setNegativeButton("Закрыть", null)
+                .show()
+            return
+        }
+        val probe = "dumpsys deviceidle whitelist | grep -i " + packageName +
+            "; dumpsys deviceidle iswhitelisted " + packageName
+        ShizukuInstall.runCommand(this, probe) { out ->
+            // `+pkg` present means allowed; `-pkg` means explicitly removed.
+            val allowed = out.contains("+" + packageName) || out.contains("user," + packageName) ||
+                out.contains("system," + packageName) || out.contains("=true")
+            val builder = AlertDialog.Builder(this)
+                .setTitle("Фоновая работа")
+                .setMessage(
+                    (if (allowed) "Приложение уже вне Doze: система не будет его усыплять.\n\n"
+                    else "Приложение в Doze: в фоне система может усыпить его, и сокет шлюза " +
+                        "оборвётся — ответы перестанут приходить, пока не откроешь приложение.\n\n") +
+                        "Ответ системы:\n" + out.ifBlank { "(пусто)" }
+                )
+                .setNegativeButton("Закрыть", null)
+            if (!allowed) {
+                builder.setPositiveButton("Разрешить в фоне") { _, _ -> whitelistDoze() }
+            }
+            builder.show()
+        }
+    }
+
+    private fun whitelistDoze() {
+        val cmd = "dumpsys deviceidle whitelist +" + packageName +
+            "; dumpsys deviceidle iswhitelisted " + packageName
+        Toast.makeText(this, "Разрешаю…", Toast.LENGTH_SHORT).show()
+        ShizukuInstall.runCommand(this, cmd) { out ->
+            AlertDialog.Builder(this)
+                .setTitle("Фоновая работа")
+                .setMessage("Ответ системы:\n" + out.ifBlank { "(пусто)" })
                 .setPositiveButton("Копировать") { _, _ -> copyToClipboard(out) }
                 .setNegativeButton("Закрыть", null)
                 .show()
