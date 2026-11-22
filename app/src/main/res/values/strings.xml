@@ -144,4 +144,8 @@
     <string name="search_role_user">вы</string>
     <string name="search_role_assistant">ассистент</string>
     <string name="search_role_tool">инструмент</string>
+    <string name="expenses">Расходы</string>
+    <string name="expenses_prices">Тарифы</string>
+    <string name="expenses_by_model">По моделям</string>
+    <string name="expenses_note">Оценка: сервер считает токены точно, но цену для своего провайдера не знает (отдаёт 0). Деньги посчитаны по тарифам PlusVibe за 1 млн токенов. Нажми на модель, чтобы поправить тариф.</string>
 </resources>

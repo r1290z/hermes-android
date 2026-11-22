@@ -444,6 +444,7 @@ class MainActivity : Activity() {
                 "Shizuku: $shizuku",
                 "Фоновая работа",
                 "Проверка установки",
+                getString(R.string.expenses),
                 "Лог и падения",
                 getString(R.string.logout)
             )) { _, which ->
@@ -453,7 +454,8 @@ class MainActivity : Activity() {
                     2 -> explainShizuku()
                     3 -> checkBackgroundWork()
                     4 -> checkInstallVerification()
-                    5 -> showLog()
+                    5 -> startActivity(Intent(this, ExpensesActivity::class.java))
+                    6 -> showLog()
                     else -> askLogout()
                 }
             }

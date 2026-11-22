@@ -58,6 +58,12 @@
             android:theme="@style/Theme.Hermes" />
 
         <activity
+            android:name=".ExpensesActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|density"
+            android:exported="false"
+            android:theme="@style/Theme.Hermes" />
+
+        <activity
             android:name=".kanban.KanbanBoardActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|density"
             android:exported="false"

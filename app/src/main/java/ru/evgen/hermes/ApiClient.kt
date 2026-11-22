@@ -485,6 +485,34 @@ class ApiClient private constructor(context: Context) {
         runCatching { JSONObject(raw).optBoolean("gateway_busy", false) }.getOrDefault(false)
     } ?: false
 
+    // ── Expenses (analytics) ─────────────────────────────────────────────────
+
+    /**
+     * Daily token totals for the last [days] days, oldest first.
+     *
+     * `days` is capped by the server at 30-ish per call; the panel only ever asks
+     * for 1 / 7 / 30, so one request covers each period exactly.
+     */
+    fun usage(days: Int): List<UsageDay> {
+        val profileQuery = profile?.let { "&profile=$it" } ?: ""
+        val raw = get("/api/analytics/usage?days=$days$profileQuery") ?: return emptyList()
+        val arr = runCatching { JSONObject(raw).optJSONArray("daily") }.getOrNull() ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            arr.optJSONObject(i)?.let { UsageDay.from(it) }
+        }
+    }
+
+    /** Token totals per model over the last [days] days, most expensive first once
+     *  the caller prices them — the server itself has no cost to sort by. */
+    fun usageByModel(days: Int): List<ModelUsage> {
+        val profileQuery = profile?.let { "&profile=$it" } ?: ""
+        val raw = get("/api/analytics/models?days=$days$profileQuery") ?: return emptyList()
+        val arr = runCatching { JSONObject(raw).optJSONArray("models") }.getOrNull() ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            arr.optJSONObject(i)?.let { ModelUsage.from(it) }
+        }
+    }
+
     // ── Messages (REST) ──────────────────────────────────────────────────────
 
     fun messages(sessionId: String, limit: Int = 200, offset: Int = 0): List<ChatMessage> {
