@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Files downloaded from the gateway live in the app cache; FileProvider is what
+     lets the system viewer open them without exposing the whole directory. -->
+<paths>
+    <cache-path name="media" path="media/" />
+</paths>

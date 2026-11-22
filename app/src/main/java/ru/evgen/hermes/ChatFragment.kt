@@ -247,7 +247,8 @@ class ChatFragment : Fragment() {
             if (name != null && currentModel == null) ui.post { setModelChip(name) }
         }
 
-        adapter = ChatAdapter(requireContext(), { url -> openLink(url) }, { loadOlder() })
+        adapter = ChatAdapter(requireContext(), { url -> openLink(url) }, { loadOlder() },
+            { path -> openAttachment(path) })
         adapter.answerHandler = { requestId, a, b -> onAnswer(requestId, a, b) }
         val layout = LinearLayoutManager(requireContext()).apply { stackFromEnd = true }
         list.layoutManager = layout
@@ -870,6 +871,91 @@ class ChatFragment : Fragment() {
             }
             .setNegativeButton(R.string.cancel, null)
             .show()
+    }
+
+    /**
+     * Opens a file the agent handed over.
+     *
+     * The bytes are fetched through the gateway (the phone has no access to the
+     * server's filesystem), written into the app cache under the original name, and
+     * handed to whatever app owns that type. A type nobody claims falls back to the
+     * share sheet instead of an error — the file is on the phone either way, which
+     * is the point of "the file arrived".
+     */
+    private fun openAttachment(path: String) {
+        val name = MediaTag.name(path)
+        Toast.makeText(context, getString(R.string.attachment_downloading, name), Toast.LENGTH_SHORT).show()
+        scope.launch {
+            val dataUrl = withContext(Dispatchers.IO) { api.readDataUrl(path) }
+            if (dataUrl == null) {
+                ui.post { Toast.makeText(context, R.string.attachment_failed, Toast.LENGTH_LONG).show() }
+                return@launch
+            }
+            val file = withContext(Dispatchers.IO) { saveToCache(name, dataUrl) }
+            if (file == null) {
+                ui.post { Toast.makeText(context, R.string.attachment_failed, Toast.LENGTH_LONG).show() }
+                return@launch
+            }
+            Diag.log("media", "скачан $name, ${file.length()} байт")
+            ui.post { showDownloaded(file) }
+        }
+    }
+
+    private fun saveToCache(name: String, dataUrl: String): java.io.File? = runCatching {
+        val comma = dataUrl.indexOf(',')
+        if (comma < 0) return@runCatching null
+        val bytes = android.util.Base64.decode(dataUrl.substring(comma + 1), android.util.Base64.DEFAULT)
+        val dir = java.io.File(requireContext().cacheDir, "media").apply { mkdirs() }
+        // Same name from two turns must not overwrite a file the viewer may still
+        // hold open — keep both.
+        var target = java.io.File(dir, name)
+        var counter = 2
+        while (target.exists()) {
+            val dot = name.lastIndexOf('.')
+            val base = if (dot > 0) name.substring(0, dot) else name
+            val ext = if (dot > 0) name.substring(dot) else ""
+            target = java.io.File(dir, "$base-$counter$ext")
+            counter++
+        }
+        target.writeBytes(bytes)
+        target
+    }.getOrNull()
+
+    private fun showDownloaded(file: java.io.File) {
+        val context = context ?: return
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context, context.packageName + ".files", file
+        )
+        val mime = context.contentResolver.getType(uri) ?: guessMime(file.name)
+        val view = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mime)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val opened = runCatching { context.startActivity(view) }.isSuccess
+        if (opened) return
+        // No app claims this type: offer the file itself instead of a dead end.
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = mime
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        runCatching {
+            context.startActivity(Intent.createChooser(send, getString(R.string.attachment_open)))
+        }.onFailure {
+            Toast.makeText(context, R.string.attachment_failed, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun guessMime(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
+        "pdf" -> "application/pdf"
+        "png" -> "image/png"
+        "jpg", "jpeg" -> "image/jpeg"
+        "txt", "log", "md" -> "text/plain"
+        "csv" -> "text/csv"
+        "json" -> "application/json"
+        "zip" -> "application/zip"
+        "apk" -> "application/vnd.android.package-archive"
+        else -> "application/octet-stream"
     }
 
     /** Drops a staged file/image and hides their views. Used when the chat

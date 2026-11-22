@@ -73,6 +73,18 @@
             android:name=".RequestActionReceiver"
             android:exported="false" />
 
+        <!-- Serves downloaded MEDIA: files to the system viewer. Without it a file
+             in the app cache cannot be handed to any other app (FileUriExposed). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- Raises the process priority while a turn is running, so a long answer
              still arrives with the screen off. Not exported: only this app starts
              it, and it does nothing but hold a notification. -->

@@ -39,7 +39,9 @@ import java.util.Locale
 class ChatAdapter(
     private val context: Context,
     private val onLink: (String) -> Unit,
-    private val onLoadOlder: () -> Unit = {}
+    private val onLoadOlder: () -> Unit = {},
+    /** A file card was tapped: download the path and open it. */
+    private val onAttachment: (String) -> Unit = {}
 ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
     sealed class Row {
@@ -76,7 +78,9 @@ class ChatAdapter(
             var text: String,
             var reasoning: String? = null,
             var streaming: Boolean = false,
-            override val time: Long = 0
+            override val time: Long = 0,
+            /** Files the agent handed over via `MEDIA:<path>`; rendered as cards. */
+            val attachments: List<String> = emptyList()
         ) : Row() {
             /** Parsed markdown, kept across rebinds: a long history is re-bound on
              *  every scroll, and re-parsing a 5K answer each time is what made the
@@ -204,7 +208,10 @@ class ChatAdapter(
             m.isTool -> Row.Tool(
                 key ?: "t${seq++}", m.toolName ?: "tool", firstLine(m.content), m.content, false, time
             )
-            else -> Row.Assistant(key ?: "a${seq++}", m.content, m.reasoning, time = time)
+            else -> Row.Assistant(
+                key ?: "a${seq++}", m.content, m.reasoning, time = time,
+                attachments = m.attachments
+            )
         }
     }
 
@@ -475,6 +482,7 @@ class ChatAdapter(
 
     private inner class AssistantHolder(view: View) : RecyclerView.ViewHolder(view) {
         private val blocks: LinearLayout = view.findViewById(R.id.blocks)
+        private val attachments: LinearLayout = view.findViewById(R.id.attachments)
         private val time: TextView = view.findViewById(R.id.time)
 
         fun bind(row: Row.Assistant) {
@@ -485,6 +493,19 @@ class ChatAdapter(
                 true
             }
             blocks.removeAllViews()
+            attachments.removeAllViews()
+            // Files first: a reply that exists only to hand over a file is usually
+            // one line of text, and the card is what the user came for.
+            for (path in row.attachments) {
+                val card = LayoutInflater.from(context)
+                    .inflate(R.layout.item_attachment, attachments, false)
+                card.findViewById<TextView>(R.id.name).text = MediaTag.name(path)
+                card.findViewById<TextView>(R.id.detail).text = context.getString(
+                    R.string.attachment_tap_hint, path.substringBeforeLast('/', "").ifEmpty { "/" }
+                )
+                card.setOnClickListener { onAttachment(path) }
+                attachments.addView(card)
+            }
             time.text = when {
                 row.time <= 0 -> ""
                 isToday(row.time) -> format(row.time, "HH:mm")

@@ -17,6 +17,13 @@
         android:layout_height="wrap_content"
         android:orientation="vertical" />
 
+    <!-- Files the agent handed over. Filled by ChatAdapter, one row each. -->
+    <LinearLayout
+        android:id="@+id/attachments"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical" />
+
     <TextView
         android:id="@+id/time"
         android:layout_width="wrap_content"

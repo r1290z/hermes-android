@@ -473,6 +473,23 @@ class ApiClient private constructor(context: Context) {
     }
 
     /**
+     * A file the agent handed over (`MEDIA:<path>`), as a `data:` URL.
+     *
+     * The phone cannot read the server's filesystem, so the bytes come back through
+     * the gateway's own reader. Paths are absolute and may contain spaces or
+     * Cyrillic — hence a real URL encode rather than string concatenation.
+     */
+    fun readDataUrl(path: String): String? {
+        val encoded = java.net.URLEncoder.encode(path, "UTF-8").replace("+", "%20")
+        val (code, body) = getWithStatus("/api/fs/read-data-url?path=$encoded")
+        if (code != 200 || body == null) {
+            Diag.log("media", "read-data-url $code для ${path.substringAfterLast('/')}")
+            return null
+        }
+        return runCatching { JSONObject(body).optString("dataUrl") }.getOrNull()?.ifEmpty { null }
+    }
+
+    /**
      * Whether the gateway has anything running at all — 2 KB, versus 115 KB for a
      * session page.
      *
@@ -1380,7 +1397,10 @@ data class ChatMessage(
     /** A compaction summary: rendered as one collapsed line, not the blob. */
     val compacted: Boolean = false,
     /** Numeric server row id; -1 for rows the server did not number. */
-    val id: Long = -1
+    val id: Long = -1,
+    /** Absolute paths the assistant handed over via `MEDIA:<path>` tags. The tags
+     *  are already stripped from [content] — showing them was the whole bug. */
+    val attachments: List<String> = emptyList()
 ) {
     val isUser: Boolean get() = role == "user"
     val isTool: Boolean get() = role == "tool"
@@ -1394,6 +1414,11 @@ data class ChatMessage(
             val content = json.optString("display_content").ifEmpty {
                 json.optString("content")
             }
+            // `MEDIA:<path>` is how the agent hands a file over; the tag itself is
+            // not part of the answer. Strip it and keep the paths for the adapter.
+            val attachments = if (role == "assistant") MediaTag.findAll(content).map { it.path }
+            else emptyList()
+            val visible = if (attachments.isEmpty()) content else MediaTag.strip(content)
             val compacted = json.optBoolean("_compressed_summary", false) ||
                 content.startsWith("[CONTEXT COMPACTION")
             val toolName = if (json.isNull("tool_name")) null else json.optString("tool_name").ifEmpty { null }
@@ -1407,12 +1432,13 @@ data class ChatMessage(
             }
             return ChatMessage(
                 role = role,
-                content = content,
+                content = visible,
                 compacted = compacted,
                 toolName = toolName,
                 reasoning = reasoning,
                 timestamp = json.optDouble("timestamp", 0.0),
-                id = json.optLong("id", -1L)
+                id = json.optLong("id", -1L),
+                attachments = attachments
             )
         }
     }
