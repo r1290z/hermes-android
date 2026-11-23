@@ -271,6 +271,9 @@ class SessionsFragment : Fragment(R.layout.fragment_sessions) {
             (q.isEmpty() || s.haystack.contains(q)) &&
                 ProjectFilterModel.matches(s, selected, knownPaths)
         }
+        // The notification layer needs the channel of a session it is announcing,
+        // and this list is the only place the gateway's `source` arrives.
+        shown.forEach { SessionSource.remember(it.id, it.source) }
         adapter.submit(shown)
         if (shown.isEmpty()) {
             status.visibility = View.VISIBLE

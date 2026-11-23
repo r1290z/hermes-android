@@ -219,6 +219,7 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
                 "Фоновая работа",
                 "Проверка установки",
                 getString(R.string.expenses),
+                getString(R.string.notif_samples),
                 "Лог и падения",
                 getString(R.string.logout)
             )) { _, which ->
@@ -229,7 +230,11 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
                     3 -> checkBackgroundWork()
                     4 -> checkInstallVerification()
                     5 -> startActivity(Intent(this, ExpensesActivity::class.java))
-                    6 -> showLog()
+                    6 -> {
+                        Notifications.showSamples(this)
+                        Toast.makeText(this, "Показал по одному каждого вида", Toast.LENGTH_SHORT).show()
+                    }
+                    7 -> showLog()
                     else -> askLogout()
                 }
             }

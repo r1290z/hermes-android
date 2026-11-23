@@ -33,10 +33,11 @@ class TurnWatchService : Service() {
         Diag.init(this)
         val sessionId = intent?.getStringExtra(EXTRA_SESSION_ID)
         val title = intent?.getStringExtra(EXTRA_SESSION_TITLE).orEmpty()
+        val model = intent?.getStringExtra(EXTRA_MODEL)
         try {
             startForeground(
                 Notifications.ID_STATUS,
-                Notifications.workingNotification(this, sessionId, title, "Работаю…")
+                Notifications.workingNotification(this, sessionId, title, "Работаю…", model)
             )
             Diag.log("service", "передний план включён")
         } catch (e: Exception) {
@@ -56,13 +57,15 @@ class TurnWatchService : Service() {
     companion object {
         private const val EXTRA_SESSION_ID = "session_id"
         private const val EXTRA_SESSION_TITLE = "session_title"
+        private const val EXTRA_MODEL = "session_model"
 
         /** Safe to call from any state: a refused start is logged, not thrown. */
-        fun start(context: Context, sessionId: String?, sessionTitle: String) {
+        fun start(context: Context, sessionId: String?, sessionTitle: String, model: String? = null) {
             try {
                 val intent = Intent(context, TurnWatchService::class.java).apply {
                     putExtra(EXTRA_SESSION_ID, sessionId)
                     putExtra(EXTRA_SESSION_TITLE, sessionTitle)
+                    if (model != null) putExtra(EXTRA_MODEL, model)
                 }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     context.startForegroundService(intent)

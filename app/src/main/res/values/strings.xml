@@ -167,4 +167,16 @@
     <string name="slash_no_session">Командам нужен открытый сеанс</string>
     <string name="slash_new_note">Новый сеанс</string>
     <string name="slash_stop_turn_note">Ход остановлен</string>
+    <string name="notif_stop">Стоп</string>
+    <string name="notif_reply">Ответить</string>
+    <string name="notif_retry">Повторить</string>
+    <string name="notif_error_title">Сбой: %1$s</string>
+    <string name="notif_samples">Примеры уведомлений</string>
+
+    <plurals name="notif_answers">
+        <item quantity="one">%1$d ответ</item>
+        <item quantity="few">%1$d ответа</item>
+        <item quantity="many">%1$d ответов</item>
+        <item quantity="other">%1$d ответа</item>
+    </plurals>
 </resources>

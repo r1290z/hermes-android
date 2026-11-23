@@ -395,7 +395,12 @@ class ChatFragment : Fragment() {
             totalMessages = -1
             if (searchOpen) closeSearch()
         }
-        if (context != null) Notifications.cancelWorking(requireContext())
+        if (context != null) {
+            Notifications.cancelWorking(requireContext())
+            // The card existed because this session's answer went unread; the user is
+            // now reading it, so the card has no job left.
+            Notifications.cancelAnswer(requireContext(), id)
+        }
         loadHistory()
         startLive(id)
         renderEmptyState()
@@ -1232,7 +1237,7 @@ class ChatFragment : Fragment() {
         // A long answer has to survive the screen going off: the socket lives in
         // this process, and without a foreground service Android is free to freeze
         // it the moment the chat is not visible.
-        TurnWatchService.start(requireContext(), id, title.text.toString())
+        TurnWatchService.start(requireContext(), id, title.text.toString(), currentModel)
         Running.started(requireContext(), id)
         sawDeltaThisTurn = false
         baselineText = null
@@ -1266,7 +1271,7 @@ class ChatFragment : Fragment() {
         }
         startHistoryFallback(id)
         if (!resumed) {
-            Notifications.showWorking(requireContext(), id, title.text.toString(), getString(R.string.waiting))
+            Notifications.showWorking(requireContext(), id, title.text.toString(), getString(R.string.waiting), currentModel)
         }
     }
 
@@ -1374,7 +1379,7 @@ class ChatFragment : Fragment() {
             lastNotifyMs = System.currentTimeMillis()
             val tail = adapter.currentAssistantText().takeLast(200).trim()
             if (tail.isNotEmpty()) {
-                Notifications.showWorking(requireContext(), sessionId, title.text.toString(), "…" + tail)
+                Notifications.showWorking(requireContext(), sessionId, title.text.toString(), "…" + tail, currentModel)
             }
         }
     }
@@ -1434,6 +1439,13 @@ class ChatFragment : Fragment() {
                 updateSendState()
                 status.visibility = View.VISIBLE
                 status.text = event.message
+                // Away from the screen, a failed turn used to produce nothing at all:
+                // from the phone an error looked exactly like a very slow answer.
+                if (!resumed) {
+                    Notifications.showError(
+                        requireContext(), sessionId, title.text.toString(), event.message
+                    )
+                }
                 val f = failedFile
                 if (f != null) {
                     // The turn carried a file: offer a verbatim retry instead of

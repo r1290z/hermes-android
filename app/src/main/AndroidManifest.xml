@@ -73,6 +73,12 @@
             android:name=".RequestActionReceiver"
             android:exported="false" />
 
+        <!-- Inline reply from the shade. Not exported: only the app's own
+             notification PendingIntent starts it. -->
+        <receiver
+            android:name=".ReplyReceiver"
+            android:exported="false" />
+
         <!-- Serves downloaded MEDIA: files to the system viewer. Without it a file
              in the app cache cannot be handed to any other app (FileUriExposed). -->
         <provider
