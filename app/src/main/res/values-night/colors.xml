@@ -17,4 +17,9 @@
     <color name="tool_bg">#1a2230</color>
     <color name="tool_text">#9aa6b5</color>
     <color name="error_text">#ff8a80</color>
+
+    <color name="channel_telegram">#5cb8e6</color>
+    <color name="channel_desktop">#a992ff</color>
+    <color name="channel_cli">#9aa6b5</color>
+    <color name="channel_background">#e0a24a</color>
 </resources>

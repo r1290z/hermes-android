@@ -21,4 +21,12 @@
     <color name="tool_text">#4b5563</color>
     <color name="error_text">#b42318</color>
     <color name="search_highlight">#fff3c4</color>
+
+    <!-- Channel badges on the session list. Distinct hues, not one accent: the mark
+         exists to be told apart at a glance, so Telegram and "on the computer" must
+         never look the same. -->
+    <color name="channel_telegram">#0e86c9</color>
+    <color name="channel_desktop">#6b4ce6</color>
+    <color name="channel_cli">#5b6572</color>
+    <color name="channel_background">#a15c00</color>
 </resources>

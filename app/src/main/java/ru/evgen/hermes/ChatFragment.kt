@@ -56,6 +56,9 @@ class ChatFragment : Fragment() {
      *  sessions page instead of finish()ing anything. */
     interface Host {
         fun onChatBack()
+        /** The session this page must show, if the host parked one while the page
+         *  did not exist yet. Taken once — the caller owns the value after that. */
+        fun takePendingChat(): Pair<String, String?>?
     }
 
     private lateinit var api: ApiClient
@@ -278,8 +281,16 @@ class ChatFragment : Fragment() {
         api.onRequest = { request -> ui.post { onRequestArrived(request) } }
         api.onRequestCancel = { requestId -> ui.post { onRequestCancelled(requestId) } }
 
-        sessionId = arguments?.getString(EXTRA_SESSION_ID)
-        title.text = arguments?.getString(EXTRA_SESSION_TITLE) ?: getString(R.string.new_session)
+        // What the host parked while this page did not exist yet wins over the launch
+        // arguments: args are written at fragment creation, and the tap that named a
+        // session often happens after that (see MainActivity.showChat).
+        val start = resolveStart(
+            parked = (activity as? Host)?.takePendingChat(),
+            argId = arguments?.getString(EXTRA_SESSION_ID),
+            argTitle = arguments?.getString(EXTRA_SESSION_TITLE)
+        )
+        sessionId = start.first
+        title.text = start.second ?: getString(R.string.new_session)
 
         view.findViewById<View>(R.id.btnBack).setOnClickListener { goBackToList() }
         view.findViewById<View>(R.id.btnReload).setOnClickListener { loadHistory() }
@@ -1822,6 +1833,25 @@ class ChatFragment : Fragment() {
     }
 
     companion object {
+        /**
+         * Which session the page opens with.
+         *
+         * A parked handoff wins over the launch arguments because the two are written
+         * at different moments: args once, when the fragment object is created, and
+         * the handoff whenever a row is tapped. Reading args only — the original
+         * behaviour — is why the first tap after launch opened an empty «Новый
+         * сеанс»: the fragment had already been created with no args, and nothing
+         * ever revisited them.
+         */
+        fun resolveStart(
+            parked: Pair<String, String?>?,
+            argId: String?,
+            argTitle: String?
+        ): Pair<String?, String?> {
+            if (parked != null) return parked
+            return argId to argTitle
+        }
+
         const val EXTRA_SESSION_ID = "ru.evgen.hermes.EXTRA_SESSION_ID"
         const val EXTRA_SESSION_TITLE = "ru.evgen.hermes.EXTRA_SESSION_TITLE"
         const val REQ_PICK_IMAGE = 4101

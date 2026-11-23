@@ -98,6 +98,7 @@ class SessionAdapter(
         private val meta: TextView = view.findViewById(R.id.meta)
         private val time: TextView = view.findViewById(R.id.time)
         private val pin: TextView = view.findViewById(R.id.pin)
+        private val channel: TextView = view.findViewById(R.id.channel)
         private val unreadDot: View = view.findViewById(R.id.unreadDot)
         private val workingDot: PulseDot = view.findViewById(R.id.workingDot)
 
@@ -106,6 +107,7 @@ class SessionAdapter(
             meta.text = metaLine(session)
             time.text = relative(session.lastActive)
             pin.visibility = if (session.pinned) View.VISIBLE else View.GONE
+            bindChannel(session)
             // Two different states, never both: a session that is working has not
             // "answered and been missed", and the pulse would be lost under a dot.
             unreadDot.visibility = if (session.unread && !session.running) View.VISIBLE else View.GONE
@@ -116,6 +118,29 @@ class SessionAdapter(
                 onLongPress(session, v)
                 true
             }
+        }
+
+        /** The channel badge. Hidden for a source we do not recognise: a wrong
+         *  badge ("ПК" for something unknown) is a lie the user cannot check. */
+        private fun bindChannel(session: Session) {
+            val label = Channel.label(session.source)
+            channel.visibility = if (label.isEmpty()) View.GONE else View.VISIBLE
+            if (label.isEmpty()) return
+            channel.text = label
+            channel.setTextColor(
+                androidx.core.content.ContextCompat.getColor(
+                    itemView.context,
+                    when (Channel.kind(session.source)) {
+                        Channel.Kind.TELEGRAM -> R.color.channel_telegram
+                        Channel.Kind.DESKTOP -> R.color.channel_desktop
+                        Channel.Kind.CLI -> R.color.channel_cli
+                        Channel.Kind.BACKGROUND -> R.color.channel_background
+                        else -> R.color.text_secondary
+                    }
+                )
+            )
+            // Screen readers get the long form; the badge itself is two letters.
+            channel.contentDescription = Channel.describe(session.source)
         }
     }
 

@@ -96,20 +96,7 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
         override fun createFragment(position: Int): Fragment = when (position) {
             0 -> ProjectsFragment()
             1 -> SessionsFragment()
-            else -> ChatFragment().apply {
-                // A notification may have named a session before page 2 was
-                // ever created; launch arguments are how the fragment reads it.
-                pendingSessionId?.let { id ->
-                    arguments = android.os.Bundle().apply {
-                        putString(ChatFragment.EXTRA_SESSION_ID, id)
-                        pendingSessionTitle?.let { putString(ChatFragment.EXTRA_SESSION_TITLE, it) }
-                    }
-                    // Consumed. Leaving it set meant a fragment recreated later
-                    // opened a stale session — including after «Новый сеанс».
-                    pendingSessionId = null
-                    pendingSessionTitle = null
-                }
-            }
+            else -> ChatFragment()
         }
     }
 
@@ -130,8 +117,15 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
         } else if (chat != null) {
             chat.openSession(id, title)
         } else {
-            // Not created yet (first tap right after launch): hand the session
-            // over as launch arguments; createFragment's copy picks them up.
+            // Not created yet (first tap right after launch). The session is PARKED
+            // here and PULLED by ChatFragment when its view exists — do not hand it
+            // over through createFragment.
+            //
+            // The bug this fixes: ViewPager2 calls createFragment() on its own
+            // schedule. When the fragment object had already been made (its view
+            // still pending), createFragment never ran again, the args stayed null,
+            // and the first tap opened an empty «Новый сеанс». Second tap worked
+            // because by then the fragment had a view and openSession() ran direct.
             pendingSessionId = id
             pendingSessionTitle = title
         }
@@ -150,8 +144,27 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
     private var pendingSessionId: String? = null
     private var pendingSessionTitle: String? = null
 
+    /** The live chat page, or null. A fragment whose view is gone cannot be told to
+     *  open anything — touching its views would throw, so it does not count. */
     private fun chatFragment(): ChatFragment? =
-        supportFragmentManager.fragments.filterIsInstance<ChatFragment>().firstOrNull()
+        supportFragmentManager.fragments
+            .filterIsInstance<ChatFragment>()
+            .firstOrNull { it.view != null }
+
+    /**
+     * The session the chat page must open, taken once.
+     *
+     * Pull, not push: the page asks when it is ready to show something. Any other
+     * ordering loses the request — a fragment created before this field is set never
+     * re-reads it, and a fragment whose view is not built yet cannot accept it.
+     */
+    override fun takePendingChat(): Pair<String, String?>? {
+        val id = pendingSessionId ?: return null
+        val title = pendingSessionTitle
+        pendingSessionId = null
+        pendingSessionTitle = null
+        return id to title
+    }
 
     /** Called from page 0: pick the project filter and show the sessions. */
     fun openProject(project: Project?) {
