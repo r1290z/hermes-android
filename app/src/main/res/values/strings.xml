@@ -179,4 +179,5 @@
         <item quantity="many">%1$d ответов</item>
         <item quantity="other">%1$d ответа</item>
     </plurals>
+    <string name="answered_short">— отвечено</string>
 </resources>

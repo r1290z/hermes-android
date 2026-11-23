@@ -1261,22 +1261,30 @@ class ApiClient private constructor(context: Context) {
     fun answerClarify(requestId: String, questionId: String, answer: String?) {
         val request = liveRequests[requestId]
         if (request?.canonical == true) {
+            val session = attachedIds.firstOrNull()
+            // Both of these used to be silent `return@scopeLaunch`s: a card whose
+            // request arrived without a generation, or a socket that had dropped its
+            // session id, turned a tap into nothing at all — the question just sat
+            // there and the agent waited out its timeout.
+            if (session == null) {
+                answerFailed("Нет соединения с сеансом")
+                return
+            }
+            val generation = request.generation ?: executionGeneration
             scopeLaunch {
-                rpc(
-                    "clarify.respond",
-                    JSONObject()
-                        .put("session_id", attachedIds.firstOrNull() ?: return@scopeLaunch)
-                        .put("execution_generation", request.generation ?: return@scopeLaunch)
-                        .put("prompt_id", requestId)
-                        .put("answer", answer ?: ""),
-                    15000
-                )
-                liveRequests.remove(requestId)
+                val params = JSONObject()
+                    .put("session_id", session)
+                    .put("prompt_id", requestId)
+                    .put("answer", answer ?: "")
+                generation?.let { params.put("execution_generation", it) }
+                val sent = rpc("clarify.respond", params, 15000)
+                if (sent == null) answerFailed(error ?: "Ответ не принят шлюзом")
+                else liveRequests.remove(requestId)
             }
             return
         }
         scopeLaunch {
-            rpc(
+            val sent = rpc(
                 "clarify.lock",
                 JSONObject()
                     .put("request_id", requestId)
@@ -1284,7 +1292,19 @@ class ApiClient private constructor(context: Context) {
                     .put("answer", answer ?: JSONObject.NULL),
                 15000
             )
+            if (sent == null) answerFailed(error ?: "Ответ не принят шлюзом")
         }
+    }
+
+    /** Called when an answer to a pending request could not be delivered. The chat
+     *  uses it to put the question card back instead of leaving the agent waiting on
+     *  a question the user believes they answered. */
+    @Volatile var onAnswerFailed: ((String) -> Unit)? = null
+
+    private fun answerFailed(why: String) {
+        Diag.log("request", "ответ не отправлен: $why")
+        val target = onAnswerFailed ?: return
+        main.post { target(why) }
     }
 
     /** Dismiss a whole clarify batch: a bare reply to the srq id, no `answers`;
@@ -1305,17 +1325,21 @@ class ApiClient private constructor(context: Context) {
     fun answerApproval(requestId: String, choice: String) {
         val request = liveRequests[requestId]
         if (request?.canonical == true) {
+            val session = attachedIds.firstOrNull()
+            if (session == null) {
+                answerFailed("Нет соединения с сеансом")
+                return
+            }
+            val generation = request.generation ?: executionGeneration
             scopeLaunch {
-                rpc(
-                    "approval.respond",
-                    JSONObject()
-                        .put("session_id", attachedIds.firstOrNull() ?: return@scopeLaunch)
-                        .put("execution_generation", request.generation ?: return@scopeLaunch)
-                        .put("prompt_id", requestId)
-                        .put("choice", choice),
-                    15000
-                )
-                liveRequests.remove(requestId)
+                val params = JSONObject()
+                    .put("session_id", session)
+                    .put("prompt_id", requestId)
+                    .put("choice", choice)
+                generation?.let { params.put("execution_generation", it) }
+                val sent = rpc("approval.respond", params, 15000)
+                if (sent == null) answerFailed(error ?: "Ответ не принят шлюзом")
+                else liveRequests.remove(requestId)
             }
             return
         }

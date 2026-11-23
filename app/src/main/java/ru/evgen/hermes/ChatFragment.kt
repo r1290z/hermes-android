@@ -151,6 +151,8 @@ class ChatFragment : Fragment() {
     // Notification bookkeeping: the card is only useful when the screen is off,
     // and it must not survive the turn.
     private var resumed = true
+    /** The request behind the most recent answer, so a failed send can restore it. */
+    private var lastUnanswered: ServerRequest? = null
     private var lastFinalText = ""
 
     /** Own scope: plain Activity is not a LifecycleOwner, so there is no
@@ -258,7 +260,18 @@ class ChatFragment : Fragment() {
 
         adapter = ChatAdapter(requireContext(), { url -> openLink(url) }, { loadOlder() },
             { path -> openAttachment(path) })
-        adapter.answerHandler = { requestId, a, b -> onAnswer(requestId, a, b) }
+        adapter.answerHandler = { requestId, qid, answer, request ->
+            onAnswer(requestId, qid, answer, request)
+        }
+        // A question answered in the shade or here can fail to reach the gateway;
+        // silence would leave the agent waiting on an answer the user believes sent.
+        api.onAnswerFailed = { why ->
+            ui.post {
+                Toast.makeText(context, why, Toast.LENGTH_LONG).show()
+                lastUnanswered?.let { adapter.restoreQuestion(it) }
+                scrollToEnd()
+            }
+        }
         val layout = LinearLayoutManager(requireContext()).apply { stackFromEnd = true }
         list.layoutManager = layout
         list.adapter = adapter
@@ -387,7 +400,7 @@ class ChatFragment : Fragment() {
             clearStagedAttachments()
             sessionId = id
             this.title.text = title ?: getString(R.string.new_session)
-            adapter.submit(emptyList())
+            adapter.submit(emptyList(), keepPending = false)
             olderOffset = 0
             lastSeenMs = 0
             // Search state belongs to the previous session's transcript.
@@ -436,7 +449,7 @@ class ChatFragment : Fragment() {
         api.detach()
         sessionId = null
         title.text = getString(R.string.new_session)
-        adapter.submit(emptyList())
+        adapter.submit(emptyList(), keepPending = false)
         adapter.setOlder(false)
         olderOffset = 0
         lastSeenMs = 0
@@ -1761,7 +1774,13 @@ class ChatFragment : Fragment() {
 
     /** Callback from the question card. Clarify: (qid, answer|null); approval:
      *  (null, choice); cancel batch: (null, null). */
-    private fun onAnswer(requestId: String, qid: String?, answer: String?) {
+    private fun onAnswer(
+        requestId: String,
+        qid: String?,
+        answer: String?,
+        request: ServerRequest? = null
+    ) {
+        lastUnanswered = request
         val label = when {
             qid == null && answer == null -> null                      // cancelled
             qid == null -> labelOfChoice(answer ?: "")                 // approval
@@ -1773,11 +1792,15 @@ class ChatFragment : Fragment() {
             answer == null -> api.answerClarify(requestId, qid, null)
             else -> api.answerClarify(requestId, qid, answer)
         }
-        Notifications.cancelRequest(requireContext(), Notifications.ID_REQUEST_BASE + requestId.hashCode() % 1000)
-        adapter.resolveQuestion(
-            requestId,
-            label?.let { getString(R.string.answered, it) } ?: getString(R.string.question_cancelled)
-        )
+        Notifications.cancelRequest(requireContext(), Notifications.ID_REQUEST_BASE + Math.floorMod(requestId.hashCode(), 1000))
+        // A multi-question clarify keeps its card until the last question is
+        // answered: swapping it for a note after the first tap hid the rest.
+        if (adapter.markQuestionAnswered(requestId, qid)) {
+            adapter.resolveQuestion(
+                requestId,
+                label?.let { getString(R.string.answered, it) } ?: getString(R.string.question_cancelled)
+            )
+        }
         scrollToEnd()
     }
 
@@ -1816,7 +1839,11 @@ class ChatFragment : Fragment() {
         sessionId?.let { ReadMarks.noteOpened(requireContext(), it) }
         saveDraft()
         if (streaming) {
-            Notifications.showWorking(requireContext(), sessionId, title.text.toString(), getString(R.string.waiting)
+            // Leaving mid-turn: the card must keep the model and the running clock,
+            // not restart as a bare "ждёт" card with no context.
+            Notifications.showWorking(
+                requireContext(), sessionId, title.text.toString(),
+                getString(R.string.waiting), currentModel
             )
         }
     }

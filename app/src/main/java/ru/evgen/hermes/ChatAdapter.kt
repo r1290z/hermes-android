@@ -128,7 +128,14 @@ class ChatAdapter(
             val request: ServerRequest,
             var answered: Boolean = false,
             override val time: Long = 0
-        ) : Row()
+        ) : Row(), PendingCard {
+            /** Which of a multi-question clarify have been answered already. The card
+             *  stays on screen until the last one is, so the user can see what is left
+             *  instead of the card disappearing after the first tap. */
+            val answeredQids = mutableSetOf<String>()
+            override val cardRequestId: String get() = request.requestId
+            override val cardAnswered: Boolean get() = answered
+        }
     }
 
     /** Adds a steer row right below the last user bubble (the stream row stays
@@ -155,10 +162,24 @@ class ChatAdapter(
      *  search jump highlight. Set once from the activity. */
     var listRef: RecyclerView? = null
 
-    fun submit(messages: List<ChatMessage>) {
+    /**
+     * Replaces the transcript with a freshly loaded page.
+     *
+     * Pending question cards are carried across. They are not part of the transcript
+     * — the server stores them as open requests, not as messages — so a plain rebuild
+     * deleted them, and a clarify that arrived a moment before a poll looked like it
+     * flashed for a second and vanished. They are appended last, which is also where
+     * a new question belongs: after everything said so far.
+     */
+    fun submit(messages: List<ChatMessage>, keepPending: Boolean = true) {
+        // A session switch must not carry the previous chat's question across: the
+        // card belongs to a request the new session knows nothing about.
+        val pending = if (keepPending) Reload.keep(rows.filterIsInstance<Row.Question>())
+        else emptyList()
         rows.clear()
         seq = 0
         for (m in messages) rows += toRow(m)
+        rows += pending
         notifyDataSetChanged()
     }
 
@@ -333,6 +354,36 @@ class ChatAdapter(
         if (idx < 0) return
         rows[idx] = Row.Assistant("a${seq++}", note)
         notifyItemChanged(idx)
+    }
+
+    /**
+     * Records that one question of a card was answered.
+     *
+     * Returns true when the whole card is finished (a single-question clarify, an
+     * approval, or the last of several) — the caller then swaps it for a note.
+     * A partial answer keeps the card and redraws it so the answered question shows
+     * its choice instead of the same buttons again.
+     */
+    fun markQuestionAnswered(requestId: String, qid: String?): Boolean {
+        val idx = rows.indexOfFirst { it is Row.Question && it.request.requestId == requestId }
+        if (idx < 0) return true
+        val row = rows[idx] as Row.Question
+        val request = row.request
+        if (request is ServerRequest.Clarify && qid != null) {
+            row.answeredQids += qid
+            if (row.answeredQids.size < request.questions.size) {
+                notifyItemChanged(idx)
+                return false
+            }
+        }
+        return true
+    }
+
+    /** Puts an answered card back after its answer failed to reach the gateway.
+     *  The optimistic resolve is gone by then, so this re-adds the row. */
+    fun restoreQuestion(request: ServerRequest) {
+        if (rows.any { it is Row.Question && it.request.requestId == request.requestId }) return
+        addQuestion(request)
     }
 
     fun hasQuestion(requestId: String): Boolean =
@@ -723,6 +774,7 @@ class ChatAdapter(
         private val skip: View = view.findViewById(R.id.questionSkip)
 
         fun bind(row: Row.Question) {
+            title.visibility = View.VISIBLE
             when (val request = row.request) {
                 is ServerRequest.Approval -> {
                     title.text = request.title
@@ -731,35 +783,61 @@ class ChatAdapter(
                         choices.addView(button(labelForChoice(choice)) {
                             row.answered = true
                             // Approval: (null, choice)
-                            answerHandler?.invoke(request.requestId, null, choice)
+                            answerHandler?.invoke(request.requestId, null, choice, request)
                         })
                     }
                     skip.visibility = View.GONE
                 }
                 is ServerRequest.Clarify -> {
-                    val question = request.questions.firstOrNull() ?: return
-                    title.text = question.question
+                    // Every question is drawn, not just the first: the gateway can ask
+                    // several at once, and a card that silently dropped all but one
+                    // left the agent waiting for answers it had already requested.
+                    title.text = request.questions.firstOrNull()?.question.orEmpty()
+                    title.visibility = View.GONE
                     choices.removeAllViews()
-                    for (choice in question.choices) {
-                        choices.addView(button(choice) {
-                            row.answered = true
-                            answerHandler?.invoke(request.requestId, question.qid, choice)
-                        })
-                    }
-                    if (request.questions.size > 1) {
-                        choices.addView(button(context.getString(R.string.skip)) {
-                            row.answered = true
-                            answerHandler?.invoke(request.requestId, question.qid, null)
-                        })
+                    for (question in request.questions) {
+                        choices.addView(label(question.question))
+                        if (question.qid in row.answeredQids) {
+                            choices.addView(muted(context.getString(R.string.answered_short)))
+                            continue
+                        }
+                        for (choice in question.choices) {
+                            choices.addView(button(choice) {
+                                answerHandler?.invoke(request.requestId, question.qid, choice, request)
+                            })
+                        }
+                        // A question with no fixed choices still needs a way out.
+                        if (question.choices.isEmpty()) {
+                            choices.addView(button(context.getString(R.string.skip)) {
+                                answerHandler?.invoke(request.requestId, question.qid, null, request)
+                            })
+                        }
                     }
                     skip.visibility = View.VISIBLE
                     skip.setOnClickListener {
-                        row.answered = true
-                        answerHandler?.invoke(request.requestId, null, null)
+                        answerHandler?.invoke(request.requestId, null, null, request)
                     }
                 }
             }
         }
+
+        /** The question text inside a multi-question card. */
+        private fun label(text: String): View = TextView(context).apply {
+            this.text = text
+            textSize = 13f
+            setTextColor(context.getColor(R.color.text_primary))
+            setPadding(0, dp(6), 0, dp(2))
+        }
+
+        private fun muted(text: String): View = TextView(context).apply {
+            this.text = text
+            textSize = 13f
+            setTextColor(context.getColor(R.color.text_secondary))
+            setPadding(0, dp(2), 0, dp(6))
+        }
+
+        private fun dp(v: Int): Int =
+            (v * context.resources.displayMetrics.density).toInt()
 
         private fun button(label: String, onClick: () -> Unit): View =
             android.widget.Button(context).apply {
@@ -778,9 +856,10 @@ class ChatAdapter(
         }
     }
 
-    /** Set by ChatFragment. Clarify: (qid, answer|null); approval: (null,
-     *  choice); cancel the whole clarify batch: (null, null). */
-    var answerHandler: ((String, String?, String?) -> Unit)? = null
+    /** Set by ChatFragment. (requestId, qid, answer) — clarify: (qid, answer|null);
+     *  approval: (null, choice); cancel the whole batch: (null, null). The request
+     *  itself rides along so a failed send can put the card back. */
+    var answerHandler: ((String, String?, String?, ServerRequest) -> Unit)? = null
 
     companion object {
         private const val TYPE_USER = 0
