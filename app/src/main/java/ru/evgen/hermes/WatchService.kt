@@ -81,13 +81,17 @@ class WatchService : Service() {
             for (s in rows) {
                 val before = baseline[s.id]
                 if (before == null) {
-                    // A session created elsewhere while we watch: take its count as
-                    // the starting point instead of skipping it for ever.
+                    // Not in the baseline, so it appeared after the watch began — a
+                    // session created elsewhere. Its first answer is news, exactly
+                    // like an answer in an old session; skipping it (the previous
+                    // behaviour) meant a session started on the desktop never
+                    // notified at all, which is the case this watch exists for.
                     baseline[s.id] = s.messageCount
-                    continue
+                    if (s.messageCount == 0) continue
+                } else {
+                    if (s.messageCount <= before) continue
+                    baseline[s.id] = s.messageCount
                 }
-                if (s.messageCount <= before) continue
-                baseline[s.id] = s.messageCount
                 lastActivity = System.currentTimeMillis()
                 // A turn this phone is streaming already notifies through the chat's
                 // own completion path; announcing it here too would double it.
