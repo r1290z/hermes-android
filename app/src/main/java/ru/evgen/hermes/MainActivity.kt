@@ -477,6 +477,15 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
         }
     }
 
+    /**
+     * The diagnostics dialog.
+     *
+     * «Прислать» is the important button: copying the log and pasting it into the chat
+     * failed repeatedly — the log simply never arrived, and three versions were spent
+     * guessing because of it. Uploading the text as a file through the gateway needs no
+     * clipboard, no typing and no session hunting: it lands in the host's attachments
+     * directory where it can be read directly.
+     */
     private fun showLog() {
         val head = "Hermes " + versionName() + " (" + currentVersion() + ")\n" +
             "Shizuku: " + ShizukuInstall.describe(this) + "\n\n"
@@ -486,28 +495,50 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
         val crash = CrashLog.read(this)
         val footer = "\n\nЖурнал пишется в файл и переживает перезапуск." +
             if (crash.isBlank()) "" else "\n\n— падения приложения —\n" + crash.takeLast(4000)
+        val base = head + own + footer
 
         if (ShizukuInstall.state(this) != ShizukuInstall.State.READY) {
-            AlertDialog.Builder(this)
-                .setTitle("Лог")
-                .setMessage(head + own + footer)
-                .setPositiveButton("Копировать") { _, _ -> copyToClipboard(head + own + footer) }
-                .setNegativeButton("Закрыть", null)
-                .show()
+            logDialog(base)
             return
         }
 
         // -t bounds the output: the crash buffer keeps days of unrelated noise.
         val cmd = "logcat -b crash -d -t 200 2>/dev/null | tail -60"
         ShizukuInstall.runCommand(this, cmd) { crashes ->
-            val text = head + own + footer + "\n\n— падения (logcat -b crash) —\n" +
-                crashes.ifBlank { "(пусто — падений не было)" }
-            AlertDialog.Builder(this)
-                .setTitle("Лог")
-                .setMessage(text)
-                .setPositiveButton("Копировать") { _, _ -> copyToClipboard(text) }
-                .setNegativeButton("Закрыть", null)
-                .show()
+            logDialog(base + "\n\n— падения (logcat -b crash) —\n" +
+                crashes.ifBlank { "(пусто — падений не было)" })
+        }
+    }
+
+    private fun logDialog(text: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Лог")
+            .setMessage(text)
+            .setPositiveButton("Копировать") { _, _ -> copyToClipboard(text) }
+            .setNeutralButton("Прислать") { _, _ -> sendLog(text) }
+            .setNegativeButton("Закрыть", null)
+            .show()
+    }
+
+    /** Uploads the log as a file through the gateway; the host can then read it. */
+    private fun sendLog(text: String) {
+        Toast.makeText(this, "Отправляю лог…", Toast.LENGTH_SHORT).show()
+        scope.launch {
+            val sent = withContext(Dispatchers.IO) {
+                val session = api.sessionsForWatch().firstOrNull()?.id
+                if (session == null) return@withContext null
+                val encoded = android.util.Base64.encodeToString(
+                    text.toByteArray(), android.util.Base64.NO_WRAP
+                )
+                val name = "hermes-log-" + System.currentTimeMillis() / 1000 + ".txt"
+                api.attachFile(session, "data:text/plain;base64,$encoded", name)
+                    ?.optString("path")?.takeIf { it.isNotEmpty() }
+            }
+            Toast.makeText(
+                this@MainActivity,
+                if (sent != null) "Лог отправлен" else "Не удалось отправить лог",
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 
