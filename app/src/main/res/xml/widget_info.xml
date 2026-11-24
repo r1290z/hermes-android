@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 4×1: one row of launcher space, wide enough for a state line and a snippet.
+     updatePeriodMillis is 30 minutes because the app pushes refreshes itself; the
+     periodic tick only covers the case where the app was never opened. -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:initialLayout="@layout/widget_hermes"
+    android:minWidth="250dp"
+    android:minHeight="70dp"
+    android:previewLayout="@layout/widget_hermes"
+    android:resizeMode="horizontal"
+    android:targetCellWidth="4"
+    android:targetCellHeight="1"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen" />

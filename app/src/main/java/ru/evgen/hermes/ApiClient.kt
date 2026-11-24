@@ -293,6 +293,91 @@ class ApiClient private constructor(context: Context) {
      * session can never hand back its opening message as if it were the answer.
      * Compaction summaries are skipped: they are not what the user asked for.
      */
+    /**
+     * The recent session list, as the background watcher needs it.
+     *
+     * `order=recent` matters: the default sorts by creation, so a reply in an old
+     * session would sit below newer empty ones and never be seen. 25 rows is enough
+     * for a person's live conversations and small enough for a 20-second poll.
+     */
+    fun sessionsForWatch(): List<Session> = sessions(limit = 25, order = "recent")
+
+    /**
+     * Full-history search: the gateway's own FTS over every stored transcript.
+     *
+     * The list screen only filters rows it has loaded, so an old session could never
+     * be found by its title. This endpoint searches the transcripts themselves and
+     * returns a snippet with the matching line.
+     */
+    fun searchHistory(query: String, limit: Int = 30): List<SearchHit> {
+        if (query.isBlank()) return emptyList()
+        val encoded = java.net.URLEncoder.encode(query, "UTF-8").replace("+", "%20")
+        val body = get("/api/sessions/search?q=$encoded&limit=$limit") ?: return emptyList()
+        val root = runCatching { JSONObject(body) }.getOrNull() ?: return emptyList()
+        val arr = root.optJSONArray("results") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.let(SearchHit::from) }
+    }
+
+    /**
+     * The whole conversation as text, rendered by the gateway.
+     *
+     * `format = md` because a phone's share sheet sends text, not JSON: a markdown
+     * export pastes into a note, a message or a ticket as it is. Returns the default
+     * file name with the body, so the caller can save and share it.
+     */
+    fun exportSession(sessionId: String, format: String = "md"): Pair<String, String>? {
+        val result = rpc(
+            "session.export",
+            JSONObject().put("session_id", sessionId).put("format", format),
+            40000
+        ) ?: return null
+        val content = result.optString("content")
+        if (content.isEmpty()) return null
+        val name = result.optString("filename").ifEmpty { "session.$format" }
+        return name to content
+    }
+
+    // ── Subagents (children of a running delegation) ─────────────────────────
+
+    /** Live children of this session. Other sessions' children never leak here —
+     *  the gateway scopes the answer by `session_id`. */
+    fun subagents(sessionId: String): List<Subagent> {
+        val result = rpc("subagent.list", JSONObject().put("session_id", sessionId), 12000)
+            ?: return emptyList()
+        val arr = result.optJSONArray("subagents") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.let(Subagent::from) }
+    }
+
+    /** Stops one child. The parent turn keeps running — this is not `session.interrupt`. */
+    fun stopSubagent(sessionId: String, subagentId: String): Boolean {
+        val result = rpc(
+            "subagent.interrupt",
+            JSONObject().put("session_id", sessionId).put("subagent_id", subagentId),
+            15000
+        )
+        return result?.optBoolean("found", false) ?: false
+    }
+
+    /** Sends a line into a child without stopping it. */
+    fun steerSubagent(sessionId: String, subagentId: String, text: String): Boolean {
+        val result = rpc(
+            "subagent.steer",
+            JSONObject().put("session_id", sessionId).put("subagent_id", subagentId).put("text", text),
+            15000
+        )
+        return result != null && result.optString("status") != "rejected"
+    }
+
+    /** The tail of a child's own output, for a peek without opening its session. */
+    fun subagentTail(sessionId: String, subagentId: String): String? {
+        val result = rpc(
+            "subagent.tail",
+            JSONObject().put("session_id", sessionId).put("subagent_id", subagentId),
+            15000
+        ) ?: return null
+        return result.optString("text").ifEmpty { null }
+    }
+
     fun latestAssistantText(sessionId: String): String {
         val recent = messages(sessionId, limit = 12)
         return recent.lastOrNull {

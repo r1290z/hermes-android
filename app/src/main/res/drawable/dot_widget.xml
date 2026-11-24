@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Widgets only accept a fixed set of view classes, so the "working" marker is a
+     plain ImageView with a circular drawable, not the animated PulseDot. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
+    <solid android:color="@color/accent" />
+    <size android:width="10dp" android:height="10dp" />
+</shape>

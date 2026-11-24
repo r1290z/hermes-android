@@ -8,6 +8,9 @@
     <!-- Keeps the process alive while an answer is streaming with the screen off. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- The background watch declares specialUse: API 34 refuses a foreground
+         service whose type is not also granted as a permission. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <!-- Shizuku: a shell-uid install of our own update, no per-source sideload gate. -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <uses-permission
@@ -90,6 +93,48 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- Search across every stored transcript, not just the loaded list. -->
+        <activity
+            android:name=".SearchActivity"
+            android:exported="false"
+            android:label="@string/search_history"
+            android:theme="@style/Theme.Hermes"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- Home-screen widget: a mirror of the last known state, refreshed by the
+             app. It never polls on its own — see HermesWidget. -->
+        <receiver
+            android:name=".HermesWidget"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="ru.evgen.hermes.WIDGET_REFRESH" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_info" />
+        </receiver>
+
+        <!-- Child agents of the open session: what they are doing, and a stop
+             button for the one that went the wrong way. -->
+        <activity
+            android:name=".AgentsActivity"
+            android:exported="false"
+            android:label="@string/agents_title"
+            android:theme="@style/Theme.Hermes" />
+
+        <!-- Polls the gateway while the app is backgrounded, so an answer started
+             elsewhere still notifies. specialUse because the work is neither media,
+             location nor sync: it is a short-lived watch that ends by itself. -->
+        <service
+            android:name=".WatchService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Watches a personal chat gateway for replies while the app is backgrounded" />
+        </service>
 
         <!-- Raises the process priority while a turn is running, so a long answer
              still arrives with the screen off. Not exported: only this app starts

@@ -169,6 +169,12 @@ class ChatFragment : Fragment() {
         ActivityResultContracts.StartActivityForResult()
     ) { result -> onPickerResult(REQ_PICK_IMAGE, result.resultCode, result.data) }
 
+    /** A photo taken right now, written to our own cache so no storage permission is
+     *  needed (the camera app writes through the FileProvider URI we hand it). */
+    private val takePhotoLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result -> onPhotoTaken(result.resultCode, result.data) }
+
     private val pickFileLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result -> onPickerResult(REQ_PICK_FILE, result.resultCode, result.data) }
@@ -441,6 +447,7 @@ class ChatFragment : Fragment() {
         if (streaming) {
             streamJob?.cancel()
             streaming = false
+        streamingSessionId = null
             updateSendState()
         }
         // Stop receiving the old session's events: they would otherwise land in
@@ -752,11 +759,74 @@ class ChatFragment : Fragment() {
     /** The paperclip now offers both branches: the working image picker and the
      *  any-type file picker. Image logic below is untouched on purpose. */
     private fun showAttachMenu() {
-        val options = arrayOf(getString(R.string.attach_photo), getString(R.string.attach_file))
+        val options = arrayOf(
+            getString(R.string.attach_camera),
+            getString(R.string.attach_photo),
+            getString(R.string.attach_file)
+        )
         AlertDialog.Builder(requireContext())
             .setTitle(R.string.attach_menu_title)
-            .setItems(options) { _, which -> if (which == 0) pickImage() else pickFile() }
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> takePhoto()
+                    1 -> pickImage()
+                    else -> pickFile()
+                }
+            }
             .show()
+    }
+
+    /** Set while the camera is open: the file it must write into. */
+    private var cameraTarget: java.io.File? = null
+
+    /**
+     * Opens the system camera. The photo lands in our cache through a FileProvider
+     * URI — that is why this needs no storage permission, and why a cancelled shot
+     * leaves a file to clean up.
+     */
+    private fun takePhoto() {
+        val dir = java.io.File(requireContext().cacheDir, "media").apply { mkdirs() }
+        val target = java.io.File(dir, "photo-" + System.currentTimeMillis() + ".jpg")
+        cameraTarget = target
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            requireContext(), requireContext().packageName + ".files", target
+        )
+        val intent = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).apply {
+            putExtra(android.provider.MediaStore.EXTRA_OUTPUT, uri)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        runCatching { takePhotoLauncher.launch(intent) }.onFailure {
+            cameraTarget = null
+            Toast.makeText(context, R.string.no_camera, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun onPhotoTaken(resultCode: Int, data: Intent?) {
+        val file = cameraTarget ?: return
+        cameraTarget = null
+        if (resultCode != Activity.RESULT_OK) {
+            file.delete()
+            return
+        }
+        // Some camera apps return the thumbnail in `data` instead of writing to the
+        // URI they were given; prefer the file, fall back to the bitmap.
+        val uri = if (file.exists() && file.length() > 0) Uri.fromFile(file) else data?.data
+        if (uri == null) {
+            file.delete()
+            return
+        }
+        scope.launch {
+            val decoded = withContext(Dispatchers.IO) { decodeImage(uri) }
+            if (decoded == null) {
+                ui.post { Toast.makeText(context, R.string.image_too_big, Toast.LENGTH_LONG).show() }
+                return@launch
+            }
+            ui.post {
+                pendingImage = decoded
+                showPendingImage()
+                updateSendState()
+            }
+        }
     }
 
     private fun pickFile() {
@@ -1246,6 +1316,7 @@ class ChatFragment : Fragment() {
         fileRowKey = adapter.addLocalUser(text, image?.uri, file?.name, file?.size ?: 0L)
         scrollToEnd()
         streaming = true
+        streamingSessionId = sessionId
         fallbackTook = false
         // A long answer has to survive the screen going off: the socket lives in
         // this process, and without a foreground service Android is free to freeze
@@ -1364,6 +1435,7 @@ class ChatFragment : Fragment() {
     /** Ends the turn from the REST answer: same state a clean `Done` leaves. */
     private fun finishFromHistory() {
         streaming = false
+        streamingSessionId = null
         updateSendState()
         status.visibility = View.GONE
         adapter.notifyDataSetChanged()
@@ -1449,6 +1521,7 @@ class ChatFragment : Fragment() {
 
             is ChatEvent.Error -> ui.post {
                 streaming = false
+        streamingSessionId = null
                 updateSendState()
                 status.visibility = View.VISIBLE
                 status.text = event.message
@@ -1471,6 +1544,7 @@ class ChatFragment : Fragment() {
 
             is ChatEvent.Done -> ui.post {
                 streaming = false
+        streamingSessionId = null
                 // The turn is over, so the protection is no longer needed and the
                 // card it holds is replaced by the answer notification below.
                 TurnWatchService.stop(requireContext())
@@ -1536,6 +1610,7 @@ class ChatFragment : Fragment() {
     private fun stopTurn() {
         streamJob?.cancel()
         streaming = false
+        streamingSessionId = null
         TurnWatchService.stop(requireContext())
         sessionId?.let { Running.finished(requireContext(), it) }
         updateSendState()
@@ -1621,6 +1696,9 @@ class ChatFragment : Fragment() {
             getString(R.string.rename),
             getString(R.string.pin),
             getString(R.string.modes),
+            getString(R.string.agents_menu),
+            getString(R.string.read_aloud),
+            getString(R.string.export_chat),
             getString(R.string.delete)
         )
         AlertDialog.Builder(requireContext())
@@ -1633,11 +1711,87 @@ class ChatFragment : Fragment() {
                         Toast.makeText(context, R.string.pin, Toast.LENGTH_SHORT).show()
                     }
                     2 -> showModes()
-                    3 -> askDelete(id)
+                    3 -> startActivity(
+                        Intent(requireContext(), AgentsActivity::class.java)
+                            .putExtra(AgentsActivity.EXTRA_SESSION_ID, id)
+                    )
+                    4 -> readAloud()
+                    5 -> exportChat(id)
+                    6 -> askDelete(id)
                 }
             }
             .setNegativeButton(R.string.cancel, null)
             .show()
+    }
+
+    /** Android's own engine, not the gateway's: it works offline, needs no audio
+     *  round-trip, and the phone already speaks Russian. */
+    private var tts: android.speech.tts.TextToSpeech? = null
+
+    private fun readAloud() {
+        val text = adapter.currentAssistantText()
+            .ifBlank { lastFinalText }
+            .replace(Regex("MEDIA:\\S+"), "")
+            .trim()
+        if (text.isEmpty()) {
+            Toast.makeText(context, R.string.nothing_to_read, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val existing = tts
+        if (existing != null) {
+            existing.speak(text.take(4000), android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "hermes")
+            return
+        }
+        tts = android.speech.tts.TextToSpeech(requireContext()) { status ->
+            if (status != android.speech.tts.TextToSpeech.SUCCESS) return@TextToSpeech
+            val engine = tts ?: return@TextToSpeech
+            val ru = java.util.Locale("ru", "RU")
+            if (engine.isLanguageAvailable(ru) >= 0) engine.language = ru
+            engine.speak(text.take(4000), android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "hermes")
+        }
+    }
+
+    /**
+     * Saves the conversation as markdown and hands it to the share sheet.
+     *
+     * The gateway renders the text (it owns the transcript); the phone only writes
+     * the file, because the gateway may be on another machine entirely.
+     */
+    private fun exportChat(id: String) {
+        Toast.makeText(context, R.string.exporting, Toast.LENGTH_SHORT).show()
+        scope.launch {
+            val exported = withContext(Dispatchers.IO) { api.exportSession(id, "md") }
+            if (!isAdded) return@launch
+            if (exported == null) {
+                Toast.makeText(context, R.string.export_failed, Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            val (name, body) = exported
+            val file = withContext(Dispatchers.IO) {
+                runCatching {
+                    val dir = java.io.File(requireContext().cacheDir, "media").apply { mkdirs() }
+                    java.io.File(dir, name).apply { writeText(body) }
+                }.getOrNull()
+            }
+            if (file == null) {
+                Toast.makeText(context, R.string.export_failed, Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                requireContext(), requireContext().packageName + ".files", file
+            )
+            val share = Intent(Intent.ACTION_SEND).apply {
+                type = "text/markdown"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_SUBJECT, title.text.toString())
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            runCatching {
+                startActivity(Intent.createChooser(share, getString(R.string.export_chat)))
+            }.onFailure {
+                Toast.makeText(context, R.string.export_failed, Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     private fun askRename(id: String) {
@@ -1872,6 +2026,11 @@ class ChatFragment : Fragment() {
     }
 
     companion object {
+        /** The session this screen is streaming right now, if any. The background
+         *  watcher skips it: the chat's own completion path already notifies, and
+         *  two cards for one answer is a bug the user sees. */
+        @Volatile var streamingSessionId: String? = null
+
         /**
          * Which session the page opens with.
          *

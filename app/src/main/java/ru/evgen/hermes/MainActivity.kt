@@ -70,6 +70,11 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
      * (singleTask). Without an id this does nothing — the pager opens on page 0.
      */
     private fun openFromIntent(intent: Intent?) {
+        // The widget's «Новый» button: no session to open, just an empty composer.
+        if (intent?.getBooleanExtra(EXTRA_NEW_SESSION, false) == true) {
+            showChat(null, null)
+            return
+        }
         val id = intent?.getStringExtra(EXTRA_SESSION_ID) ?: return
         val title = intent.getStringExtra(ChatFragment.EXTRA_SESSION_TITLE)
         showChat(id, title)
@@ -78,6 +83,27 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         openFromIntent(intent)
+    }
+
+    /**
+     * The background watch runs only while the app is not on screen.
+     *
+     * Started in onStop, stopped in onStart: leaving the watch on while the user is
+     * reading would post a card for an answer already visible, and a foreground
+     * service that never ends is a permanent notification about nothing.
+     */
+    override fun onStop() {
+        AppForeground.visible = false
+        super.onStop()
+        // A turn this phone started is watched by the chat's own poll (kept alive by
+        // TurnWatchService); a second watcher would notify twice for one answer.
+        if (ChatFragment.streamingSessionId == null) WatchService.start(this)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        AppForeground.visible = true
+        WatchService.stop(this)
     }
 
     override fun onRefreshLongPress() {
@@ -220,6 +246,7 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
                 "Проверка установки",
                 getString(R.string.expenses),
                 getString(R.string.notif_samples),
+                getString(R.string.search_history),
                 "Лог и падения",
                 getString(R.string.logout)
             )) { _, which ->
@@ -234,7 +261,8 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
                         Notifications.showSamples(this)
                         Toast.makeText(this, "Показал по одному каждого вида", Toast.LENGTH_SHORT).show()
                     }
-                    7 -> showLog()
+                    7 -> startActivity(Intent(this, SearchActivity::class.java))
+                    8 -> showLog()
                     else -> askLogout()
                 }
             }
@@ -532,5 +560,7 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
         /** Kept for the notification tap intent: opening a session from the
          *  shade has to land in the chat, not on the list. */
         const val EXTRA_SESSION_ID = "ru.evgen.hermes.SESSION_ID"
+        /** The widget's «Новый» button: open an empty composer, no session. */
+        const val EXTRA_NEW_SESSION = "ru.evgen.hermes.NEW_SESSION"
     }
 }

@@ -35,6 +35,8 @@ object Notifications {
     private const val CH_ANSWER = "hermes_answer"
     private const val CH_REQUEST = "hermes_request"
     private const val CH_ERROR = "hermes_error"
+    /** The background watch card. Minimum importance: it is a status line, not news. */
+    const val CH_WATCH = "hermes_watch"
 
     const val ID_STATUS = 1001
     const val ID_SUMMARY = 1000
@@ -83,6 +85,14 @@ object Notifications {
         nm.createNotificationChannel(
             NotificationChannel(CH_ERROR, "Сбои", NotificationManager.IMPORTANCE_HIGH).apply {
                 description = "Ход не выполнился: сеть, модель, отказ инструмента"
+            }
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(CH_WATCH, "Фоновое наблюдение", NotificationManager.IMPORTANCE_MIN).apply {
+                description = "Показывает, что приложение ждёт ответ, пока оно свёрнуто"
+                setShowBadge(false)
+                enableVibration(false)
+                setSound(null, null)
             }
         )
     }

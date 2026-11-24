@@ -101,11 +101,19 @@ class SessionsFragment : Fragment(R.layout.fragment_sessions) {
             (activity as? Host)?.onMoreClicked()
         }
 
+        // The box filters loaded rows; Enter asks the gateway about everything.
         search.setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == IME_ACTION_SEARCH) {
-                hideKeyboard()
-                true
-            } else false
+            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) {
+                val q = search.text.toString().trim()
+                if (q.isNotEmpty()) {
+                    startActivity(
+                        android.content.Intent(requireContext(), SearchActivity::class.java)
+                            .putExtra(SearchActivity.EXTRA_QUERY, q)
+                    )
+                }
+                return@setOnEditorActionListener true
+            }
+            false
         }
         search.addTextChangedListener(object : android.text.TextWatcher {
             override fun afterTextChanged(s: android.text.Editable?) = applyFilter()
@@ -275,6 +283,15 @@ class SessionsFragment : Fragment(R.layout.fragment_sessions) {
         // and this list is the only place the gateway's `source` arrives.
         shown.forEach { SessionSource.remember(it.id, it.source) }
         adapter.submit(shown)
+        // The home-screen widget mirrors what this list already knows: it does no
+        // networking of its own, so the app has to hand it the numbers.
+        HermesWidget.save(
+            requireContext(),
+            running = shown.count { it.running },
+            unread = shown.count { it.unread },
+            model = shown.firstOrNull { it.model.isNotEmpty() }?.model.orEmpty(),
+            snippet = shown.firstOrNull { it.preview.isNotEmpty() }?.preview.orEmpty()
+        )
         if (shown.isEmpty()) {
             status.visibility = View.VISIBLE
             status.text = if (q.isNotEmpty()) getString(R.string.nothing_found)
