@@ -525,8 +525,10 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
         Toast.makeText(this, "Отправляю лог…", Toast.LENGTH_SHORT).show()
         scope.launch {
             val sent = withContext(Dispatchers.IO) {
-                val session = api.sessionsForWatch().firstOrNull()?.id
-                if (session == null) return@withContext null
+                // The open session — not the first row of the list. `file.attach` is
+                // refused for a session this connection has not subscribed to, and
+                // picking a row from the list never is (permission_denied, 8.3.4).
+                val session = ChatFragment.currentSessionId ?: return@withContext null
                 val encoded = android.util.Base64.encodeToString(
                     text.toByteArray(), android.util.Base64.NO_WRAP
                 )
@@ -536,7 +538,11 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
             }
             Toast.makeText(
                 this@MainActivity,
-                if (sent != null) "Лог отправлен" else "Не удалось отправить лог",
+                when {
+                    sent == null -> "Не удалось отправить лог"
+                    sent == "no-session" -> "Откройте любой сеанс и повторите"
+                    else -> "Лог отправлен"
+                },
                 Toast.LENGTH_LONG
             ).show()
         }

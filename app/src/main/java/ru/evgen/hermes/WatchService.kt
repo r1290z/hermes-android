@@ -68,6 +68,17 @@ class WatchService : Service() {
         return START_STICKY
     }
 
+    /**
+     * The poll loop.
+     *
+     * Every exit is deliberate — the idle timeout, a logout, [onDestroy] — and the last
+     * one arrives as an interrupt, which surfaces inside [Thread.sleep] as
+     * InterruptedException. Left uncaught it escapes this thread, hits the default
+     * uncaught-exception handler and takes the whole process down: that is the crash
+     * the log shows as `FATAL EXCEPTION: Thread-8 · java.lang.InterruptedException`
+     * at WatchService.loop. Stopping the watch is not an error, so it is caught here
+     * and simply ends the loop.
+     */
     private fun loop() {
         val api = ApiClient.get(this)
         Diag.log("watch", "поток наблюдения запущен")
@@ -77,6 +88,7 @@ class WatchService : Service() {
             .getOrNull()
             ?.forEach { baseline[it.id] = it.messageCount }
 
+        try {
         while (true) {
             Thread.sleep(POLL_MS)
             if (!api.isLoggedIn()) break
@@ -124,11 +136,20 @@ class WatchService : Service() {
                 break
             }
         }
-        stopSelf()
+        } catch (e: InterruptedException) {
+            // Expected: the service is being destroyed. Nothing to report.
+        } catch (e: Throwable) {
+            // A crash in the watch must never reach the process-wide handler.
+            Diag.log("watch", "поток упал: ${e.javaClass.simpleName}: ${e.message}")
+        }
+        runCatching { stopSelf() }
     }
 
     override fun onDestroy() {
         Diag.log("watch", "наблюдение окончено")
+        // interrupt() only sets a flag; the loop's sleep() turns it into an exception
+        // that the loop now handles. Clearing the reference stops a stale thread from
+        // being "reused" by a later start.
         worker?.interrupt()
         worker = null
         super.onDestroy()

@@ -309,6 +309,7 @@ class ChatFragment : Fragment() {
             argTitle = arguments?.getString(EXTRA_SESSION_TITLE)
         )
         sessionId = start.first
+        currentSessionId = start.first
         title.text = start.second ?: getString(R.string.new_session)
 
         view.findViewById<View>(R.id.btnBack).setOnClickListener { goBackToList() }
@@ -405,6 +406,7 @@ class ChatFragment : Fragment() {
             saveDraft() // the draft belongs to the session it was typed in
             clearStagedAttachments()
             sessionId = id
+            currentSessionId = id
             this.title.text = title ?: getString(R.string.new_session)
             adapter.submit(emptyList(), keepPending = false)
             olderOffset = 0
@@ -455,6 +457,7 @@ class ChatFragment : Fragment() {
         // itself stays up, so a turn started earlier still completes and notifies.
         api.detach()
         sessionId = null
+        currentSessionId = null
         title.text = getString(R.string.new_session)
         adapter.submit(emptyList(), keepPending = false)
         adapter.setOlder(false)
@@ -501,7 +504,15 @@ class ChatFragment : Fragment() {
                 if (streaming) continue
                 val newest = withContext(Dispatchers.IO) { api.messages(id, 1) }.lastOrNull()
                     ?: continue
-                if (newest.timestamp * 1000 > lastSeenMs) {
+                // Both sides must be truncated to Long. `lastSeenMs` is a Long built as
+                // `(timestamp * 1000).toLong()`, while `newest.timestamp * 1000` is a
+                // Double: the fractional part (…813.1151 vs …813) made every message
+                // look newer than the one already on screen, so the poll re-read the
+                // whole history every 3 s forever — the `poll на сервере новое
+                // сообщение` flood in the phone log, and enough traffic to bury the
+                // lines that mattered.
+                val newestMs = (newest.timestamp * 1000).toLong()
+                if (newestMs > lastSeenMs) {
                     Diag.log("poll", "на сервере новое сообщение — перечитываю")
                     loadHistory(keepScroll = true)
                 }
@@ -2030,6 +2041,16 @@ class ChatFragment : Fragment() {
          *  watcher skips it: the chat's own completion path already notifies, and
          *  two cards for one answer is a bug the user sees. */
         @Volatile var streamingSessionId: String? = null
+
+        /**
+         * The session the chat currently has open.
+         *
+         * The gateway refuses `file.attach` for a session the connection has not
+         * subscribed to (`permission_denied`), so anything that attaches a file has to
+         * target THIS id — picking a row out of the session list looks equivalent and
+         * fails every time.
+         */
+        @Volatile var currentSessionId: String? = null
 
         /**
          * Which session the page opens with.
