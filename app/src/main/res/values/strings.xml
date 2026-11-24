@@ -180,4 +180,6 @@
         <item quantity="other">%1$d ответа</item>
     </plurals>
     <string name="answered_short">— отвечено</string>
+    <string name="send_selected">Отправить выбранное</string>
+    <string name="select_at_least_one">Отметь хотя бы один пункт</string>
 </resources>

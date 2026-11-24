@@ -133,6 +133,8 @@ class ChatAdapter(
              *  stays on screen until the last one is, so the user can see what is left
              *  instead of the card disappearing after the first tap. */
             val answeredQids = mutableSetOf<String>()
+            /** Multi-select ticks, per question: a rebind must not lose them. */
+            val selections = mutableMapOf<String, MutableSet<String>>()
             override val cardRequestId: String get() = request.requestId
             override val cardAnswered: Boolean get() = answered
         }
@@ -801,10 +803,56 @@ class ChatAdapter(
                             choices.addView(muted(context.getString(R.string.answered_short)))
                             continue
                         }
-                        for (choice in question.choices) {
-                            choices.addView(button(choice) {
-                                answerHandler?.invoke(request.requestId, question.qid, choice, request)
-                            })
+                        if (question.multiSelect) {
+                            // "Отметь всё, что подходит" with single-tap buttons would
+                            // send one label and settle the question — the server waits
+                            // for a JSON array, so the UI has to collect several first.
+                            val picked = row.selections.getOrPut(question.qid) { mutableSetOf() }
+                            val toggles = mutableListOf<android.widget.Button>()
+                            for (choice in question.choices) {
+                                val b = toggle(choice, choice in picked)
+                                toggles += b
+                                choices.addView(b)
+                            }
+                            val send = button(context.getString(R.string.send_selected)) {
+                                if (picked.isEmpty()) {
+                                    Toast.makeText(
+                                        context, R.string.select_at_least_one, Toast.LENGTH_SHORT
+                                    ).show()
+                                    return@button
+                                }
+                                // The wire format lives in MultiSelect: the gateway
+                                // decodes a JSON array of labels and rejects a joined
+                                // string, so this is not a formatting choice.
+                                val payload = MultiSelect.payload(picked)
+                                if (payload != null) {
+                                    answerHandler?.invoke(request.requestId, question.qid, payload, request)
+                                }
+                            }
+                            send.isEnabled = picked.isNotEmpty()
+                            toggles.forEach { b ->
+                                b.setOnClickListener {
+                                    val on = b.tag == true
+                                    b.tag = !on
+                                    b.setBackgroundColor(
+                                        context.getColor(if (!on) R.color.accent else R.color.code_bg)
+                                    )
+                                    b.setTextColor(
+                                        context.getColor(if (!on) R.color.bubble_user_text else R.color.text_primary)
+                                    )
+                                    val next = MultiSelect.toggle(picked.toSet(), b.text.toString(), !on)
+                                    picked.clear()
+                                    picked += next
+                                    send.isEnabled = picked.isNotEmpty()
+                                }
+                            }
+                            choices.addView(send)
+                        } else {
+                            for (choice in question.choices) {
+                                choices.addView(button(choice) {
+                                    answerHandler?.invoke(request.requestId, question.qid, choice, request)
+                                })
+                            }
                         }
                         // A question with no fixed choices still needs a way out.
                         if (question.choices.isEmpty()) {
@@ -820,6 +868,17 @@ class ChatAdapter(
                 }
             }
         }
+
+        /** A choice button that stays on screen while others are ticked. */
+        private fun toggle(label: String, on: Boolean): android.widget.Button =
+            button(label) {}.apply {
+                tag = on
+                isAllCaps = false
+                setBackgroundColor(context.getColor(if (on) R.color.accent else R.color.code_bg))
+                setTextColor(
+                    context.getColor(if (on) R.color.bubble_user_text else R.color.text_primary)
+                )
+            }
 
         /** The question text inside a multi-question card. */
         private fun label(text: String): View = TextView(context).apply {
@@ -839,7 +898,7 @@ class ChatAdapter(
         private fun dp(v: Int): Int =
             (v * context.resources.displayMetrics.density).toInt()
 
-        private fun button(label: String, onClick: () -> Unit): View =
+        private fun button(label: String, onClick: () -> Unit): android.widget.Button =
             android.widget.Button(context).apply {
                 text = label
                 isAllCaps = false
