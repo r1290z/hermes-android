@@ -92,12 +92,25 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
      * reading would post a card for an answer already visible, and a foreground
      * service that never ends is a permanent notification about nothing.
      */
-    override fun onStop() {
-        AppForeground.visible = false
-        super.onStop()
+    /**
+     * The watch is started HERE, not in onStop.
+     *
+     * Android 12+ refuses `startForegroundService` once the app counts as
+     * background, and by onStop it already does: the call throws
+     * ForegroundServiceStartNotAllowedException, the catch logs one Diag line, and
+     * the watch silently never runs — exactly the "no notification, no error"
+     * symptom. onPause is still inside the allowed window.
+     */
+    override fun onPause() {
+        super.onPause()
         // A turn this phone started is watched by the chat's own poll (kept alive by
         // TurnWatchService); a second watcher would notify twice for one answer.
         if (ChatFragment.streamingSessionId == null) WatchService.start(this)
+    }
+
+    override fun onStop() {
+        AppForeground.visible = false
+        super.onStop()
     }
 
     override fun onStart() {

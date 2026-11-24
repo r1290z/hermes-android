@@ -33,6 +33,7 @@ class WatchService : Service() {
     /** What each session looked like when the watch started, so only growth counts. */
     private val baseline = HashMap<String, Int>()
     private var lastActivity = 0L
+    private var polls = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -48,7 +49,7 @@ class WatchService : Service() {
         } catch (e: Exception) {
             // Android 12+ can refuse a foreground start from the background. The
             // watch is a convenience; failing it must not crash the app.
-            Diag.log("watch", "передний план не включён: ${e.javaClass.simpleName}")
+            Diag.log("watch", "передний план не включён: ${e.javaClass.simpleName}: ${e.message}")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -62,6 +63,7 @@ class WatchService : Service() {
 
     private fun loop() {
         val api = ApiClient.get(this)
+        Diag.log("watch", "поток наблюдения запущен")
         // Baseline first: without it the first poll would announce every session
         // that had any history at all.
         runCatching { api.sessionsForWatch() }
@@ -77,7 +79,15 @@ class WatchService : Service() {
                 lastActivity = System.currentTimeMillis()
                 continue
             }
-            val rows = runCatching { api.sessionsForWatch() }.getOrNull() ?: continue
+            val rows = runCatching { api.sessionsForWatch() }.getOrNull()
+            if (rows == null) {
+                Diag.log("watch", "опрос не удался")
+                continue
+            }
+            polls++
+            // One line every ten polls (~3.5 min): enough to prove the loop is alive
+            // in the phone's log, quiet enough not to bury the interesting lines.
+            if (polls % 10 == 1) Diag.log("watch", "опрос №$polls, сеансов ${rows.size}")
             for (s in rows) {
                 val before = baseline[s.id]
                 if (before == null) {
