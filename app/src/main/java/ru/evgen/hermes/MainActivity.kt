@@ -38,6 +38,9 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // First, before any of our code can throw: a crash with no trace is a crash
+        // that costs a version to diagnose (and three were spent that way).
+        CrashLog.install(this)
 
         api = ApiClient.get(this)
         if (!api.isLoggedIn()) {
@@ -105,7 +108,9 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
         super.onPause()
         // A turn this phone started is watched by the chat's own poll (kept alive by
         // TurnWatchService); a second watcher would notify twice for one answer.
-        if (ChatFragment.streamingSessionId == null) WatchService.start(this)
+        if (ChatFragment.streamingSessionId == null && WatchPrefs.enabled(this)) {
+            WatchService.start(this)
+        }
     }
 
     override fun onStop() {
@@ -260,6 +265,7 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
                 getString(R.string.expenses),
                 getString(R.string.notif_samples),
                 getString(R.string.search_history),
+                watchLabel(),
                 "Лог и падения",
                 getString(R.string.logout)
             )) { _, which ->
@@ -275,7 +281,8 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
                         Toast.makeText(this, "Показал по одному каждого вида", Toast.LENGTH_SHORT).show()
                     }
                     7 -> startActivity(Intent(this, SearchActivity::class.java))
-                    8 -> showLog()
+                    8 -> toggleWatch()
+                    9 -> showLog()
                     else -> askLogout()
                 }
             }
@@ -454,13 +461,31 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
      * It exists because a crash report used to mean the user retyping a stack
      * trace off the screen. Everything is copyable in one tap.
      */
+    /** «Фоновые уведомления: вкл/выкл» — the switch for the watch service. */
+    private fun watchLabel(): String =
+        if (WatchPrefs.enabled(this)) "Фоновые уведомления: вкл"
+        else "Фоновые уведомления: выкл"
+
+    private fun toggleWatch() {
+        val on = !WatchPrefs.enabled(this)
+        WatchPrefs.set(this, on)
+        if (on) {
+            WatchService.start(this)
+            Toast.makeText(this, "Слежу за ответами в фоне", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(this, "Фоновое наблюдение выключено", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun showLog() {
         val head = "Hermes " + versionName() + " (" + currentVersion() + ")\n" +
             "Shizuku: " + ShizukuInstall.describe(this) + "\n\n"
         val own = Diag.tail(120).ifBlank { "(журнал пуст — приложение ещё ничего не делало)" }
         // The file keeps several launches, so the interesting run — the one that
         // ended in a crash — is still there after the process died.
-        val footer = "\n\nЖурнал пишется в файл и переживает перезапуск."
+        val crash = CrashLog.read(this)
+        val footer = "\n\nЖурнал пишется в файл и переживает перезапуск." +
+            if (crash.isBlank()) "" else "\n\n— падения приложения —\n" + crash.takeLast(4000)
 
         if (ShizukuInstall.state(this) != ShizukuInstall.State.READY) {
             AlertDialog.Builder(this)

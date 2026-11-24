@@ -44,12 +44,19 @@ class WatchService : Service() {
         }
         Notifications.ensureChannels(this)
         Diag.init(this)
-        try {
+        // The contract with the system is unforgiving: once startForegroundService()
+        // returns, this service MUST call startForeground() or the process is killed
+        // with "did not then call Service.startForeground()". So the notification is
+        // posted first and the typed call is only an upgrade; a refusal is logged and
+        // the service stops cleanly instead of taking the app down with it.
+        val posted = runCatching {
             startForeground(ID_WATCH, watchNotification(this))
-        } catch (e: Exception) {
-            // Android 12+ can refuse a foreground start from the background. The
-            // watch is a convenience; failing it must not crash the app.
+            true
+        }.getOrElse { e ->
             Diag.log("watch", "передний план не включён: ${e.javaClass.simpleName}: ${e.message}")
+            false
+        }
+        if (!posted) {
             stopSelf()
             return START_NOT_STICKY
         }
