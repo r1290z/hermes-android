@@ -11,11 +11,19 @@
 set -euo pipefail
 
 # No default: the build host is the author's own machine and has no business
-# being in a public repository. Set it explicitly, e.g.
+# being in a public repository. Two ways to set it — the env var, or a local
+# `.build-host` file (one line, `user@host`) that .gitignore keeps out of git:
 #   HERMES_BUILD_HOST=root@build.example.com ./build.sh
-HOST=${HERMES_BUILD_HOST:?задай HERMES_BUILD_HOST (user@host с JDK и Android SDK)}
-REMOTE_DIR=/root/hermes-app
 HERE=$(cd "$(dirname "$0")" && pwd)
+HOST=${HERMES_BUILD_HOST:-}
+if [[ -z $HOST && -f $HERE/.build-host ]]; then
+  HOST=$(tr -d '\r\n' < "$HERE/.build-host")
+fi
+[[ -n $HOST ]] || {
+  echo "задай HERMES_BUILD_HOST (user@host с JDK и Android SDK) или создай .build-host" >&2
+  exit 1
+}
+REMOTE_DIR=/root/hermes-app
 APK="$HERE/app/build/outputs/apk/release/app-release.apk"
 SECRETS="$HOME/.hermes/secrets"
 BUILD_TOOLS=/opt/android-sdk/build-tools/36.0.0
