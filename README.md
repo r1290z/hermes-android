@@ -10,6 +10,17 @@ Android (Kotlin)  ──HTTP + WS──▶  Hermes webapp API (:9120)  ──▶
                   ──HTTP──────▶  Kanban WebUI (опционально)
 ```
 
+<p align="center">
+  <img src="docs/screenshots/01-sessions.png" width="30%" alt="Список сеансов">
+  <img src="docs/screenshots/02-chat.png" width="30%" alt="Чат с инструментами">
+  <img src="docs/screenshots/03-login.png" width="30%" alt="Вход в свой сервер">
+</p>
+
+Скриншоты — не макеты: их рисует `ScreenshotTest`, который на JVM разворачивает
+настоящие layout'ы приложения и сохраняет PNG (`./gradlew testDebugUnitTest
+--tests ru.evgen.hermes.ScreenshotTest`). Данные в них выдуманы, переписки
+пользователя в репозиторий не попадают.
+
 ## Что умеет
 
 - **Сессии** — список с фильтром по проекту, архив, поиск по всей истории,

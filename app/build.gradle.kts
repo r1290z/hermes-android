@@ -72,6 +72,14 @@ android {
     }
     // The Shizuku shell bridge is an AIDL service (Shizuku.newProcess is private
     // in the public API), so AIDL compilation has to be on.
+    // Robolectric needs the merged resources to inflate real layouts under
+    // test; without it every layout id resolves to "not found".
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+        }
+    }
+
     buildFeatures {
         aidl = true
     }
