@@ -10,7 +10,10 @@
 # as a failure, including a missing APK.
 set -euo pipefail
 
-HOST=${HERMES_BUILD_HOST:-root@build.example.com}
+# No default: the build host is the author's own machine and has no business
+# being in a public repository. Set it explicitly, e.g.
+#   HERMES_BUILD_HOST=root@build.example.com ./build.sh
+HOST=${HERMES_BUILD_HOST:?задай HERMES_BUILD_HOST (user@host с JDK и Android SDK)}
 REMOTE_DIR=/root/hermes-app
 HERE=$(cd "$(dirname "$0")" && pwd)
 APK="$HERE/app/build/outputs/apk/release/app-release.apk"
