@@ -148,7 +148,7 @@ class ScreenshotTest {
         val host = FrameLayout(activity())
         val view = host.inflate(R.layout.activity_login)
         view.findViewById<android.widget.EditText>(R.id.server).setText("https://hermes.example.com")
-        view.findViewById<android.widget.EditText>(R.id.user).setText("evgen")
+        view.findViewById<android.widget.EditText>(R.id.user).setText("demo")
         render("03-login", view)
     }
 
