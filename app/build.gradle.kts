@@ -19,7 +19,8 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "ru.evgen.hermes"
+        // Forks change the id with one flag: -PappId=dev.example.hermes
+        applicationId = providers.gradleProperty("appId").getOrElse("ru.evgen.hermes")
         minSdk = 24
         targetSdk = 34
         versionCode = 53
@@ -41,15 +42,21 @@ android {
         release {
             isMinifyEnabled = false
             isShrinkResources = false
-            // No debug fallback on purpose: a release APK signed with the debug key
-            // looks fine and installs on nothing that already has the app. Missing
-            // keystore.properties must fail the build, not degrade it.
-            signingConfig = signingConfigs.findByName("release")
-                ?: throw GradleException(
+            // Unsigned release is a legitimate outcome for anyone building this
+            // without a keystore. Our own pipeline passes -PrequireSigning=true, so
+            // a missing key still fails loudly there instead of shipping a build
+            // signed with the debug key (which installs over nothing).
+            val releaseSigning = signingConfigs.findByName("release")
+            signingConfig = releaseSigning
+            if (releaseSigning == null &&
+                providers.gradleProperty("requireSigning").getOrElse("false").toBoolean()
+            ) {
+                throw GradleException(
                     "keystore.properties отсутствует — release нельзя подписать. " +
                         "Ключ лежит в ~/.hermes/secrets/hermes-android.{jks,properties}, " +
                         "build.sh копирует его на билд-хост."
                 )
+            }
         }
         debug {
             applicationIdSuffix = ".debug"

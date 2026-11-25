@@ -11,7 +11,7 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /**
- * HTTP client for the kanban board service (kanban.example.com).
+ * HTTP client for the kanban board service (the WebUI in front of kanban.db).
  *
  * Separate from the chat [ru.evgen.hermes.ApiClient] on purpose: that one has
  * readTimeout(0) for its socket, this one is plain request/response with 15 s
@@ -20,11 +20,18 @@ import java.util.concurrent.TimeUnit
  */
 class KanbanApi(context: Context) {
 
-    private val prefs = context.getSharedPreferences("kanban", Context.MODE_PRIVATE)
+    private val app: Context = context.applicationContext
+    private val prefs = forPrefs(context)
 
+    /**
+     * The board normally lives on the same server as the chat, so an unset value
+     * follows [ru.evgen.hermes.ApiClient]'s base. A separate host (board behind
+     * its own reverse proxy) is set explicitly from the token dialog.
+     */
     var base: String
-        get() = prefs.getString(PREF_BASE, DEFAULT_BASE) ?: DEFAULT_BASE
-        private set(value) { prefs.edit().putString(PREF_BASE, value).apply() }
+        get() = prefs.getString(PREF_BASE, null)?.takeIf { it.isNotBlank() }
+            ?: ru.evgen.hermes.ApiClient.get(app).base
+        set(value) { prefs.edit().putString(PREF_BASE, value.trim().trimEnd('/')).apply() }
 
     var token: String
         get() = prefs.getString(PREF_TOKEN, "") ?: ""
@@ -140,6 +147,8 @@ class KanbanApi(context: Context) {
     companion object {
         private const val PREF_BASE = "base"
         private const val PREF_TOKEN = "token"
-        const val DEFAULT_BASE = "https://kanban.example.com"
+
+        private fun forPrefs(context: Context) =
+            context.applicationContext.getSharedPreferences("kanban", Context.MODE_PRIVATE)
     }
 }

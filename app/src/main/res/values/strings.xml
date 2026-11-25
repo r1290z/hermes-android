@@ -106,11 +106,12 @@
 
     <!-- Kanban board -->
     <string name="kanban_board">Доска</string>
-    <string name="kanban_need_token">Доска живёт на kanban.example.com и защищена токеном. Введи его один раз — он останется только на этом телефоне.</string>
+    <string name="kanban_need_token">Доска — это Kanban WebUI на сервере Hermes, вход по токену. Введи адрес и токен один раз — они останутся только на этом телефоне.</string>
     <string name="kanban_enter_token">Ввести токен</string>
     <string name="kanban_token_title">Токен доски</string>
     <string name="kanban_token_message">32-символьный токен из ~/.hermes/kanban-webui.env на сервере</string>
     <string name="kanban_token_hint">Токен доски</string>
+    <string name="kanban_server_hint">https://hermes.example.com</string>
     <string name="kanban_check">Проверить</string>
     <string name="kanban_token_ok">Токен принят</string>
     <string name="kanban_token_bad">Токен не принят — проверь и попробуй ещё раз</string>

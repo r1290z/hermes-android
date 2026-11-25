@@ -188,19 +188,33 @@ class KanbanBoardActivity : Activity() {
     }
 
     fun showTokenDialog() {
+        val serverField = EditText(this).apply {
+            setText(api.base)
+            setSingleLine(true)
+            hint = getString(R.string.kanban_server_hint)
+            inputType = android.text.InputType.TYPE_TEXT_VARIATION_URI
+            setPadding(48, 32, 48, 32)
+        }
         val field = EditText(this).apply {
             setText(api.token)
             setSingleLine(true)
             hint = getString(R.string.kanban_token_hint)
             setPadding(48, 32, 48, 32)
         }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(serverField)
+            addView(field)
+        }
         AlertDialog.Builder(this)
             .setTitle(R.string.kanban_token_title)
             .setMessage(R.string.kanban_token_message)
-            .setView(field)
+            .setView(box)
             .setPositiveButton(R.string.kanban_check) { _, _ ->
                 val value = field.text.toString().trim()
-                if (value.isEmpty()) return@setPositiveButton
+                val server = serverField.text.toString().trim()
+                if (value.isEmpty() || server.isEmpty()) return@setPositiveButton
+                api.base = server
                 api.token = value
                 scope.launch {
                     val ok = withContext(Dispatchers.IO) {

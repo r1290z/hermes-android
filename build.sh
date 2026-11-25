@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Build the APK on the build host (.123 has JDK + Android SDK; this host has none).
+# Author's own pipeline: builds on a remote host that has JDK + Android SDK
+# (this one has neither). Not needed to build the app — ./gradlew works anywhere
+# with JDK 17 and Android SDK 36 installed; see README.md.
 #
 #   ./build.sh              assembleRelease, pull the APK back
 #   ./build.sh publish      also bump version.json and publish to the webapp bundle
@@ -53,7 +55,7 @@ ssh -o BatchMode=yes "$HOST" "chmod 600 $REMOTE_DIR/hermes-release.jks $REMOTE_D
 BUILD_LOG=$(ssh -o BatchMode=yes "$HOST" "cd $REMOTE_DIR && \
   export ANDROID_HOME=/opt/android-sdk ANDROID_SDK_ROOT=/opt/android-sdk && \
   /root/.gradle/wrapper/dists/gradle-8.11.1-bin/*/gradle-8.11.1/bin/gradle \
-    assembleRelease --no-daemon -q 2>&1; echo \"__STATUS=\$?\"")
+    assembleRelease --no-daemon -q -PrequireSigning=true 2>&1; echo \"__STATUS=\$?\"")
 echo "$BUILD_LOG" | sed '/^__STATUS=/d' | tail -40
 BUILD_STATUS=$(echo "$BUILD_LOG" | sed -n 's/^__STATUS=//p' | tail -1)
 if [[ "$BUILD_STATUS" != "0" ]]; then

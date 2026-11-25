@@ -1498,7 +1498,10 @@ class ApiClient private constructor(context: Context) {
     }
 
     companion object {
-        const val DEFAULT_BASE = "https://hermes.example.com"
+        // Empty on purpose: the base URL belongs to the user's own server, not to
+        // the build. A baked-in default sends every fresh install to one specific
+        // host, which is exactly what must not happen in a published build.
+        const val DEFAULT_BASE = ""
         const val ARCHIVE_ERR_OFFLINE = "Нет связи с сервером"
         const val ARCHIVE_ERR_AUTH = "Нужно войти заново"
         private const val KEY_BASE = "base_url"

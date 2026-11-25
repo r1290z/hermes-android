@@ -88,8 +88,11 @@ object UpdateChecker {
     }
 
     private fun download(activity: Activity, info: Info) {
+        // A relative apkUrl is resolved against the server the app is logged into,
+        // never against a build-time host: the update channel belongs to whoever
+        // runs the server.
         val url = if (info.apkUrl.startsWith("http")) info.apkUrl
-        else "https://hermes.example.com/" + info.apkUrl.removePrefix("./").removePrefix("/")
+        else ApiClient.get(activity).base.trimEnd('/') + "/" + info.apkUrl.removePrefix("./").removePrefix("/")
         // Unique name per attempt. DownloadManager appends "-1" when the target
         // already exists, and then the path we hand to `pm install` points at a
         // file that was never written — the install fails and quietly falls back
