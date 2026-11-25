@@ -93,7 +93,11 @@ class ApiClient private constructor(context: Context) {
         prefs.edit().putString(KEY_BASE, url.trimEnd('/')).apply()
     }
 
-    fun isLoggedIn(): Boolean = prefs.getBoolean(KEY_LOGGED_IN, false)
+    /** True only when a session exists AND we know which server it belongs to.
+     *  An install upgraded from a build with a baked-in default has cookies but
+     *  no saved base, and every request would then be built from an empty host —
+     *  so it lands on the login screen instead, with the address to re-enter. */
+    fun isLoggedIn(): Boolean = prefs.getBoolean(KEY_LOGGED_IN, false) && base.isNotBlank()
 
     fun forget() {
         closeSocket()
@@ -113,10 +117,9 @@ class ApiClient private constructor(context: Context) {
             .put("username", username)
             .put("password", password)
             .toString()
-        val request = Request.Builder()
-            .url("$base/auth/password-login")
-            .post(body.toRequestBody(JSON))
-            .build()
+        val request = build("/auth/password-login")
+            ?.post(body.toRequestBody(JSON))
+            ?.build() ?: return "Укажи адрес сервера"
         return try {
             client.newCall(request).execute().use { response ->
                 if (response.code in 200..299) {
@@ -202,7 +205,8 @@ class ApiClient private constructor(context: Context) {
     /** Same fetch, but reporting the HTTP code so the archive can tell a row
      *  deleted upstream (404/410 — prune) from a transient failure (keep). */
     fun sessionRowStatus(id: String): Pair<Int, JSONObject?> = try {
-        val response = client.newCall(Request.Builder().url("$base/api/sessions/$id").get().build()).execute()
+        val req = build("/api/sessions/$id")?.get()?.build() ?: return -1 to null
+        val response = client.newCall(req).execute()
         response.use {
             val body = it.body?.string()
             when {
@@ -266,7 +270,7 @@ class ApiClient private constructor(context: Context) {
         val generation = if (snapshot.isNull("runtime_generation")) null
         else snapshot.optInt("runtime_generation")
 
-        val builder = Request.Builder().url("$base/api/sessions/$id")
+        val builder = build("/api/sessions/$id") ?: return false
         return try {
             val request = if (method == "DELETE") {
                 val url = "$base/api/sessions/$id?request_id=$requestId&expected_revision=$revision" +
@@ -786,10 +790,9 @@ class ApiClient private constructor(context: Context) {
     }
 
     private fun socketTicket(): String? {
-        val request = Request.Builder()
-            .url("$base/api/webapp/socket-ticket?socket=gateway")
-            .post("{}".toRequestBody(JSON))
-            .build()
+        val request = build("/api/webapp/socket-ticket?socket=gateway")
+            ?.post("{}".toRequestBody(JSON))
+            ?.build() ?: return null
         val raw = execute(request)
         if (raw == null) {
             Diag.log("ticket", "нет ответа (401/сеть)")
@@ -802,6 +805,10 @@ class ApiClient private constructor(context: Context) {
 
     private fun ensureSocket(timeoutMs: Long = 20000): Boolean {
         if (connected && socket != null) return true
+        if (base.isBlank()) {
+            error = "Не указан адрес сервера"
+            return false
+        }
         synchronized(this) {
             if (connected && socket != null) return true
             val ticket = socketTicket() ?: run {
@@ -1452,7 +1459,13 @@ class ApiClient private constructor(context: Context) {
     /** null means "not logged in or unreachable" — the caller shows the login
      *  screen rather than an error dialog. */
     private fun get(path: String): String? =
-        execute(Request.Builder().url(base + path).get().build())
+        build(path)?.get()?.build()?.let { execute(it) }
+
+    /** OkHttp rejects a relative URL with IllegalArgumentException, not IOException,
+     *  so a request built from an unset base would crash the caller instead of
+     *  failing. Every builder below goes through here. */
+    private fun build(path: String): Request.Builder? =
+        if (base.isBlank()) null else Request.Builder().url(base + path)
 
     /** Same as get(), but reports the HTTP code (or -1 on IOException) so the
      *  archive can tell an auth failure (302/401) from no connectivity.
@@ -1461,7 +1474,8 @@ class ApiClient private constructor(context: Context) {
      *  sits behind the login, and "Не удалось проверить обновления" covered both
      *  an expired session and a dead network. */
     fun getWithStatus(path: String): Pair<Int, String?> = try {
-        client.newCall(Request.Builder().url(base + path).get().build()).execute().use { r ->
+        val req = build(path)?.get()?.build() ?: return -1 to null
+        client.newCall(req).execute().use { r ->
             when {
                 r.isSuccessful -> r.code to r.body?.string()
                 else -> r.code to null
