@@ -78,6 +78,20 @@ keyPassword=…
 ./gradlew assembleRelease -PappId=dev.example.hermes
 ```
 
+### Релизы
+
+`.github/workflows/build.yml` на каждый push гоняет тесты и собирает debug APK
+артефактом. `.github/workflows/release.yml` на тег `v*` собирает release и
+прикладывает APK + sha256 к черновику релиза. Чтобы APK был подписан, в
+Settings → Secrets → Actions нужны два секрета:
+
+| Секрет | Значение |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | `base64 -w0 my-release.jks` |
+| `ANDROID_KEYSTORE_PROPERTIES` | содержимое `keystore.properties` |
+
+Без них job остаётся зелёным и отдаёт неподписанный APK.
+
 ## Первый запуск
 
 Экран входа спрашивает три вещи: адрес сервера (`https://hermes.example.com`),
