@@ -1,5 +1,7 @@
 # Hermes Mobile (Android)
 
+**Русский** · [English](#english)
+
 Нативный Android-клиент для **Hermes Agent** — агента, который живёт на вашем
 собственном сервере. Не обёртка над браузером: приложение само ходит в HTTP API
 Hermes и держит WebSocket, поэтому у него нормальные push-уведомления, работа в
@@ -137,15 +139,140 @@ MIT — см. [LICENSE](LICENSE). Проект не связан с Nous Researc
 
 ## English
 
-Native Android client for a self-hosted **Hermes Agent**. Talks to the Hermes
-webapp API (`:9120`, HTTP + WebSocket) — sessions, streaming chat, tool output,
-run control, notifications, file upload, kanban board, voice input, self-update.
+**[Русский](#hermes-mobile-android)**
 
-Requires Hermes Agent 0.23.x with `webapp.enabled: true` behind HTTPS. Build with
-JDK 17 + Android SDK 36: `./gradlew assembleDebug`. Release builds without a
-keystore are unsigned by design; drop your own `keystore.properties` next to the
-project to sign them. Override the app id with `-PappId=dev.example.hermes`.
+Native Android client for a self-hosted **[Hermes Agent](https://hermes-agent.nousresearch.com/docs)** —
+an agent that lives on your own server. Not a browser wrapper: the app talks to the
+Hermes HTTP API directly and keeps a WebSocket open, so it gets real push
+notifications, real background work and a real chat feed instead of an iframe.
 
-The `/api/*` endpoints are Hermes' internal webapp contract, not a public API —
-pin the agent version you test against. MIT licensed, not affiliated with Nous
-Research.
+```
+Android (Kotlin)  ──HTTP + WS──▶  Hermes webapp API (:9120)  ──▶  agent, sessions, tools
+                  ──HTTP──────▶  Kanban WebUI (optional)
+```
+
+<a name="english-screens"></a>
+<p align="center">
+  <img src="docs/screenshots/01-sessions.png" width="30%" alt="Session list">
+  <img src="docs/screenshots/02-chat.png" width="30%" alt="Chat with tool output">
+  <img src="docs/screenshots/03-login.png" width="30%" alt="Sign in to your own server">
+</p>
+
+These are not mockups. `ScreenshotTest` inflates the app's real layouts on the JVM
+and writes the PNGs (`./gradlew testDebugUnitTest --tests
+ru.evgen.hermes.ScreenshotTest`). The data in them is invented — no user
+transcripts are in this repository.
+
+### Features
+
+- **Sessions** — project filter, archive, full-history search, read marks.
+- **Chat** — streaming answers over WebSocket (`assistant.delta`), tool calls and
+  their results inline, markdown and syntax highlighting, images and files.
+- **Run control** — send, stop, *steer* (inject an instruction into a run that is
+  already going instead of killing it), queue several messages.
+- **Slash commands**, model and profile switching straight from the chat.
+- **Notifications** — three channels: "working" status (LOW), answer (DEFAULT),
+  input request (HIGH). Plus Live Updates on Android 16+ and a home-screen widget.
+- **Background** — optional foreground service that follows a run to completion
+  and delivers the answer even if the app is closed.
+- **Files** — send any file, not just images.
+- **Kanban** — a [Kanban WebUI](https://github.com/PriuS2/HermesKanban) board in
+  mobile form: columns as tabs, drag a card by long-pressing it.
+- **Voice input** in the composer.
+- **Self-update** — reads `/version.json` next to the webapp and installs the new
+  APK (silently through Shizuku when it is available).
+
+### Requirements
+
+1. **Hermes Agent** on the server, version **0.23.x** (verified on 0.23.3). In
+   `~/.hermes/config.yaml`:
+
+   ```yaml
+   webapp:
+     enabled: true
+     host: 0.0.0.0
+     port: 9120
+     public_url: https://hermes.example.com
+   ```
+
+2. **HTTPS on the outside.** The app requires `https://` — Android blocks
+   cleartext by default. Caddy, nginx or NPM with a certificate all work.
+
+3. **A login.** The app signs in with the same account as the Hermes web panel.
+   The password is never stored; only cookies are.
+
+The Kanban section is optional — without a token it simply does not open.
+
+<a name="build"></a>
+### Build
+
+JDK 17 and Android SDK 36 are required (`compileSdk 36`, `minSdk 24`,
+`targetSdk 34`).
+
+```bash
+./gradlew assembleDebug        # debug build, installs alongside release
+./gradlew testDebugUnitTest    # 13 test classes on the JVM (Robolectric)
+```
+
+A release build without a keystore comes out **unsigned** — that is a normal
+outcome for a fork. To sign it, put `keystore.properties` in the project root:
+
+```properties
+storeFile=my-release.jks
+storePassword=…
+keyAlias=…
+keyPassword=…
+```
+
+Neither the keystore nor `keystore.properties` is tracked by git (see
+`.gitignore`).
+
+Change the `applicationId` without touching code:
+
+```bash
+./gradlew assembleRelease -PappId=dev.example.hermes
+```
+
+#### Releases
+
+`.github/workflows/build.yml` runs the tests and uploads a debug APK as an
+artifact on every push. `.github/workflows/release.yml` builds a signed release
+on a `v*` tag and attaches the APK plus its sha256 to a draft release. Signing in
+CI needs two secrets under Settings → Secrets → Actions:
+
+| Secret | Value |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | `base64 -w0 my-release.jks` |
+| `ANDROID_KEYSTORE_PROPERTIES` | the contents of `keystore.properties` |
+
+Without them the job stays green and produces an unsigned APK.
+
+### First run
+
+The login screen asks for three things: the server address
+(`https://hermes.example.com`), a login and a password. The address is remembered
+in the app's settings and can be changed there later from the menu.
+
+### What this is not
+
+The app is a client, not a server: without a running Hermes it does nothing. It
+also does **not** use the [OI]-compatible API (`:8642`) — it talks to the panel's
+webapp API (`:9120`), the same interface the web panel and the TUI use.
+
+### Compatibility
+
+`/api/*` on the Hermes panel is an internal contract, not a public API. It moves
+between agent versions, therefore:
+
+| Hermes Agent | App |
+|---|---|
+| 0.23.x | works (verified on 0.23.3) |
+| newer | untested; read the Hermes `CHANGELOG` first |
+
+If sessions stop loading right after a Hermes upgrade, it is almost always a
+changed endpoint, not the phone.
+
+### License
+
+MIT — see [LICENSE](LICENSE). Not affiliated with Nous Research; Hermes Agent is
+distributed separately under MIT.
