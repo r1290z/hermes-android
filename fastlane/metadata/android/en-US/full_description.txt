@@ -1,0 +1,25 @@
+Hermes Mobile is a native Android client for a self-hosted Hermes Agent.
+
+It is not a browser wrapper: the app talks to the Hermes HTTP API directly and keeps a WebSocket open, so an answer streams token by token, tool calls and their results appear in the feed, and a long run survives the screen going off.
+
+It needs your own Hermes server. Without one the app has nothing to connect to — this is a client, not a hosted service.
+
+Features:
+
+<b>Sessions</b> — a list with a project filter, archive, full-history search and read marks.<br>
+<b>Chat</b> — streaming answers over WebSocket, tool calls inline, Markdown and syntax highlighting, images and files.<br>
+<b>Run control</b> — send, stop, or steer: inject an instruction into a run that is already going instead of killing it. Queue several messages.<br>
+<b>Slash commands</b>, model and profile switching straight from the chat.<br>
+<b>Notifications</b> — a working status, finished answers with their text, and input requests as high-priority cards. Live Updates on Android 16+ and a home-screen widget.<br>
+<b>Background</b> — an optional foreground service that follows a run to completion and delivers the answer even if the app is closed.<br>
+<b>Files</b> — send any file, not just images.<br>
+<b>Kanban</b> — your Kanban WebUI board in mobile form: columns as tabs, long-press to drag a card.<br>
+<b>Voice input</b> in the composer.
+
+Requirements: Hermes Agent 0.23.x on your server with the webapp enabled, HTTPS on the outside, and a login (the same account as the Hermes web panel). The password is never stored, only session cookies.
+
+Self-update is off by default. It can only pull builds from your own server, so it is a deliberate opt-in, and the dialog says exactly that before it is enabled. Nothing is downloaded or installed while it is off.
+
+Source code: https://github.com/r1290z/hermes-android
+
+This client is not affiliated with Nous Research; Hermes Agent is their project.

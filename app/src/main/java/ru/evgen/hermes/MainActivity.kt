@@ -65,7 +65,10 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
         // A notification tap: open the session it is about on the chat page.
         openFromIntent(intent)
 
-        checkForUpdates(manual = false)
+        // Only when the user asked for it. Checking on every start made this an
+        // updater nobody opted into, and the APK it pulls comes from the user's own
+        // server rather than from wherever the app was installed from.
+        if (UpdatePrefs.enabled(this)) checkForUpdates(manual = false)
     }
 
     /**
@@ -259,6 +262,7 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
             .setItems(arrayOf<CharSequence>(
                 getString(R.string.archive),
                 "Проверить обновление",
+                updateLabel(),
                 "Shizuku: $shizuku",
                 "Фоновая работа",
                 "Проверка установки",
@@ -272,17 +276,18 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
                 when (which) {
                     0 -> startActivity(Intent(this, ArchiveActivity::class.java))
                     1 -> checkForUpdates(manual = true)
-                    2 -> explainShizuku()
-                    3 -> checkBackgroundWork()
-                    4 -> checkInstallVerification()
-                    5 -> startActivity(Intent(this, ExpensesActivity::class.java))
-                    6 -> {
+                    2 -> toggleUpdates()
+                    3 -> explainShizuku()
+                    4 -> checkBackgroundWork()
+                    5 -> checkInstallVerification()
+                    6 -> startActivity(Intent(this, ExpensesActivity::class.java))
+                    7 -> {
                         Notifications.showSamples(this)
                         Toast.makeText(this, "Показал по одному каждого вида", Toast.LENGTH_SHORT).show()
                     }
-                    7 -> startActivity(Intent(this, SearchActivity::class.java))
-                    8 -> toggleWatch()
-                    9 -> showLog()
+                    8 -> startActivity(Intent(this, SearchActivity::class.java))
+                    9 -> toggleWatch()
+                    10 -> showLog()
                     else -> askLogout()
                 }
             }
@@ -465,6 +470,42 @@ class MainActivity : FragmentActivity(), SessionsFragment.Host, ChatFragment.Hos
     private fun watchLabel(): String =
         if (WatchPrefs.enabled(this)) "Фоновые уведомления: вкл"
         else "Фоновые уведомления: выкл"
+
+    private fun updateLabel(): String =
+        if (UpdatePrefs.enabled(this)) "Свои обновления: вкл"
+        else "Свои обновления: выкл"
+
+    /**
+     * Turning this on is consent to bypass the installer's screening, so the dialog
+     * has to say where the APK comes from — and the default has to be «off».
+     * A client that fetches and installs its own builds is a self-updater; the app
+     * repository considers a silent one a policy violation.
+     */
+    private fun toggleUpdates() {
+        if (UpdatePrefs.enabled(this)) {
+            UpdatePrefs.set(this, false)
+            Toast.makeText(this, "Свои обновления выключены", Toast.LENGTH_SHORT).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Включить свои обновления?")
+            .setMessage(
+                "Приложение будет спрашивать сервер «${
+                    api.base.ifBlank { "твой сервер" }
+                }», есть ли сборка новее, и предлагать её скачать.\n\n" +
+                    "Важно: APK скачивается с ТВОЕГО сервера, а не из магазина, откуда " +
+                    "приложение установлено. Такой APK никто не проверял — ни магазин, " +
+                    "ни его модераторы. Включай, только если сам собираешь или публикуешь " +
+                    "сборки на своём сервере.\n\n" +
+                    "Пока выключено, приложение не ходит за обновлениями и не ставит ничего само."
+            )
+            .setPositiveButton("Включить") { _, _ ->
+                UpdatePrefs.set(this, true)
+                Toast.makeText(this, "Свои обновления включены", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Оставить выкл", null)
+            .show()
+    }
 
     private fun toggleWatch() {
         val on = !WatchPrefs.enabled(this)

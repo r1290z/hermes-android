@@ -40,8 +40,10 @@ Android (Kotlin)  ──HTTP + WS──▶  Hermes webapp API (:9120)  ──▶
 - **Kanban** — доска из [Kanban WebUI](https://github.com/PriuS2/HermesKanban)
   в мобильном виде: колонки как вкладки, перемещение карточки долгим нажатием.
 - **Голосовой ввод** в композер.
-- **Самообновление** — читает `/version.json` рядом с webapp и ставит новый APK
-  (через Shizuku без экрана установщика, если он есть).
+- **Самообновление (по желанию)** — читает `/version.json` рядом с webapp и ставит
+  новый APK (через Shizuku без экрана установщика, если он есть). **Выключено по
+  умолчанию**: APK приходит с твоего же сервера, а не из магазина, поэтому включение
+  — осознанный шаг, и диалог об этом предупреждает.
 
 ## Требования
 
@@ -179,8 +181,10 @@ transcripts are in this repository.
 - **Kanban** — a [Kanban WebUI](https://github.com/PriuS2/HermesKanban) board in
   mobile form: columns as tabs, drag a card by long-pressing it.
 - **Voice input** in the composer.
-- **Self-update** — reads `/version.json` next to the webapp and installs the new
-  APK (silently through Shizuku when it is available).
+- **Self-update (opt-in)** — reads `/version.json` next to the webapp and installs
+  the new APK (silently through Shizuku when it is available). **Off by default**:
+  the APK comes from your own server rather than from an app store, so turning it on
+  is a deliberate step, and the dialog says so before it is enabled.
 
 ### Requirements
 

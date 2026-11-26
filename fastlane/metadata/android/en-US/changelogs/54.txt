@@ -1,0 +1,1 @@
+Self-update is now off by default and opt-in, with a clear notice that the APK comes from your own server.

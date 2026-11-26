@@ -23,8 +23,8 @@ android {
         applicationId = providers.gradleProperty("appId").getOrElse("ru.evgen.hermes")
         minSdk = 24
         targetSdk = 34
-        versionCode = 53
-        versionName = "8.3.5"
+        versionCode = 54
+        versionName = "8.4.0"
     }
 
     signingConfigs {
