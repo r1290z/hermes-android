@@ -23,6 +23,23 @@ Android (Kotlin)  ──HTTP + WS──▶  Hermes webapp API (:9120)  ──▶
 --tests ru.evgen.hermes.ScreenshotTest`). Данные в них выдуманы, переписки
 пользователя в репозиторий не попадают.
 
+## Установка
+
+**Готовый APK** — в [релизах](https://github.com/r1290z/hermes-android/releases/latest),
+рядом лежит `*.apk.sha256`. Минимум Android 7.0 (API 24).
+
+**Обновления — через [Obtainium](https://github.com/ImranR98/Obtainium)** (или
+`neo-obtainium`): добавьте `https://github.com/r1290z/hermes-android` как источник,
+приложение само подтянет новые релизы. Это честнее встроенного самообновления:
+магазина нет, проверять версию и качать APK будет отдельный инструмент.
+
+В самом приложении тоже есть самообновление, но оно **выключено по умолчанию** —
+см. ниже.
+
+Магазины: в F-Droid приложения пока нет (нужна история разработки от трёх
+месяцев), в IzzyOnDroid его не будет — их правила запрещают и клиенты к LLM, и
+код, написанный генеративными моделями.
+
 ## Что умеет
 
 - **Сессии** — список с фильтром по проекту, архив, поиск по всей истории,
@@ -164,6 +181,22 @@ These are not mockups. `ScreenshotTest` inflates the app's real layouts on the J
 and writes the PNGs (`./gradlew testDebugUnitTest --tests
 ru.evgen.hermes.ScreenshotTest`). The data in them is invented — no user
 transcripts are in this repository.
+
+### Install
+
+**Prebuilt APK** — [releases](https://github.com/r1290z/hermes-android/releases/latest),
+with a `*.apk.sha256` next to it. Android 7.0 (API 24) or newer.
+
+**Updates via [Obtainium](https://github.com/ImranR98/Obtainium)** (or
+`neo-obtainium`): add `https://github.com/r1290z/hermes-android` as a source and it
+picks up new releases on its own. That is more honest than a built-in updater —
+there is no store, so a separate tool checks the version and downloads the APK.
+
+The app does have a self-updater too, but it is **off by default** — see below.
+
+Stores: not on F-Droid yet (it requires three months of development history), and
+IzzyOnDroid is out — their policy rejects both LLM clients and code written by
+generative models.
 
 ### Features
 
